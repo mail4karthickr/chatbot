@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sync
+      POSTGRES_PASSWORD: sync
+      POSTGRES_DB: sync
+    ports:
+      # Host 5432 is often taken by a local Postgres. Bind Docker to 5433 to coexist.
+      - "5433:5432"
+    volumes:
+      - sync_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  sync_pgdata:
