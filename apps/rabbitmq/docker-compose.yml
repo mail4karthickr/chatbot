@@ -1,0 +1,33 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI — http://localhost:15672 (app/app)
+    environment:
+      # Non-guest user so containers on the shared `chatbot` network can
+      # connect (RabbitMQ's built-in `guest` user is loopback-only).
+      # Dev credentials — replace with a secret in prod.
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - chatbot
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  # Shared network for every service that needs the broker. Created by this
+  # compose; other compose files (e.g. ingestion-service) reference it as
+  # `external: true`.
+  chatbot:
+    name: chatbot

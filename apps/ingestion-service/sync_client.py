@@ -1,9 +1,13 @@
 # sync_client.py — HTTP client for the s3-sync-service ledger
+import logging
+import time
 from functools import lru_cache
 
 import httpx
 
 from config import get_settings
+
+log = logging.getLogger("sync_client")
 
 
 @lru_cache
@@ -15,31 +19,47 @@ def diff(files: list[dict], prefix: str | None = None) -> dict:
     """POST /diff. `files` items must carry s3_key, s3_etag, s3_size, s3_last_modified.
     Optional prefix scopes the ledger read so cross-prefix rows aren't classified as deleted.
     Returns {new, modified, deleted, unchanged}."""
+    t0 = time.perf_counter()
     body: dict = {"files": files}
     if prefix is not None:
         body["prefix"] = prefix
     r = _client().post("/diff", json=body)
     r.raise_for_status()
-    return r.json()
+    result = r.json()
+    log.info("diff files=%d new=%d modified=%d deleted=%d unchanged=%d took=%.2fs",
+             len(files),
+             len(result.get("new", [])), len(result.get("modified", [])),
+             len(result.get("deleted", [])), len(result.get("unchanged", [])),
+             time.perf_counter() - t0)
+    return result
 
 
 def mark_ingested(keys: list[str]) -> None:
     if not keys:
         return
+    t0 = time.perf_counter()
     r = _client().post("/files/mark-ingested", json={"keys": keys})
     r.raise_for_status()
+    log.info("mark_ingested keys=%d took=%.2fs",
+             len(keys), time.perf_counter() - t0)
 
 
 def mark_failed(key: str, error: str) -> None:
+    t0 = time.perf_counter()
     r = _client().post("/files/mark-failed", json={"key": key, "error": error})
     r.raise_for_status()
+    log.info("mark_failed key=%s took=%.2fs",
+             key, time.perf_counter() - t0)
 
 
 def mark_deleted(keys: list[str]) -> None:
     if not keys:
         return
+    t0 = time.perf_counter()
     r = _client().post("/files/mark-deleted", json={"keys": keys})
     r.raise_for_status()
+    log.info("mark_deleted keys=%d took=%.2fs",
+             len(keys), time.perf_counter() - t0)
 
 
 def reset_ledger() -> int:

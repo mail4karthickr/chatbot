@@ -1,4 +1,5 @@
 import { useAppDispatch, useAppSelector } from '../app/hooks'
+import { clearEntries, startStreaming } from '../features/events/eventsSlice'
 import { runIngest } from '../features/ingest/ingestSlice'
 import { fetchS3Files } from '../features/s3/s3Slice'
 import { openModal } from '../features/ui/uiSlice'
@@ -7,7 +8,11 @@ export function Header() {
   const dispatch = useAppDispatch()
   const listStatus = useAppSelector((s) => s.s3.status)
   const ingestStatus = useAppSelector((s) => s.ingest.status)
-  const count = useAppSelector((s) => s.s3.files?.length ?? 0)
+  // Only source documents under docs/ get ingested — mirrors INGEST_PREFIX in
+  // apps/ingestion-service/app.py. Excludes _artifacts/ (pipeline outputs).
+  const count = useAppSelector(
+    (s) => s.s3.files?.filter((f) => f.key.startsWith('docs/')).length ?? 0,
+  )
 
   const loadingList = listStatus === 'loading'
   const ingesting = ingestStatus === 'running'
@@ -38,7 +43,13 @@ export function Header() {
         </button>
         <button
           className="btn primary"
-          onClick={() => dispatch(runIngest())}
+          onClick={() => {
+            // Fresh log view for each ingest run, then open the SSE stream
+            // BEFORE firing the request so we capture the initial API events.
+            dispatch(clearEntries())
+            dispatch(startStreaming())
+            dispatch(runIngest())
+          }}
           disabled={ingesting || loadingList || count === 0}
         >
           {ingesting

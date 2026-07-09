@@ -3,20 +3,49 @@
 
 Generation lives in the agent-service; this module is deliberately LLM-free.
 """
+import logging
+import time
 from functools import lru_cache
 
+import torch
 from sentence_transformers import CrossEncoder
 
 from storage import presigned_url
 from vectordb import hybrid_search
 
+log = logging.getLogger("rag")
+
 
 IMG_SCORE_THRESHOLD = 0.30   # tune on your golden set
+# Candidate pool passed to the reranker. Rerank cost is roughly linear in this
+# number; 25 keeps quality (top-8 stays stable in practice) while dropping
+# CrossEncoder work by ~50% vs the previous 50.
+RERANK_CANDIDATE_POOL = 25
+
+
+def _pick_device() -> str:
+    """Prefer GPU when available. On Apple Silicon this is a 3–5× speedup for
+    the CrossEncoder vs CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 @lru_cache
 def _reranker() -> CrossEncoder:
-    return CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512)
+    device = _pick_device()
+    log.info("loading reranker device=%s", device)
+    return CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512, device=device)
+
+
+def warmup() -> None:
+    """Force the reranker to load + JIT compile at import/startup time so the
+    first user query doesn't pay the model-load penalty (multi-second first hit)."""
+    t0 = time.perf_counter()
+    _reranker().predict([("warmup", "warmup")])
+    log.info("reranker warmup took=%.2fs", time.perf_counter() - t0)
 
 
 def _rerank(query: str, points, top_n=8):
@@ -60,9 +89,22 @@ def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
           "images": [{image_key, url, caption, score}, ...],
         }
     """
-    points   = hybrid_search(query, doc_ids=doc_ids, top_k=50)
+    t_total = time.perf_counter()
+    t0 = time.perf_counter()
+    points   = hybrid_search(query, doc_ids=doc_ids, top_k=RERANK_CANDIDATE_POOL)
+    t_search = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     reranked = _rerank(query, points, top_n=top_n)
+    t_rerank = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     image_hits = _rerank_candidate_images(reranked, query)
+    t_img = time.perf_counter() - t0
+
+    log.info("retrieve timing search=%.2fs rerank=%.2fs images=%.2fs total=%.2fs points=%d reranked=%d img_candidates=%d",
+             t_search, t_rerank, t_img, time.perf_counter() - t_total,
+             len(points), len(reranked), len(image_hits))
 
     chunks = [
         {

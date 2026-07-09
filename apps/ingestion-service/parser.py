@@ -73,7 +73,7 @@ class Parser:
             context = "\n".join(p for p in (r["caption"], prev_t, next_t) if p)
             elements.append({
                 "kind": "image", "page": r["page"],
-                "image_key": f"{doc_id}/{version}/p{r['page']}_img{img_index}.png",
+                "image_key": f"_artifacts/{doc_id}/{version}/p{r['page']}_img{img_index}.png",
                 "image_bytes": r["image_bytes"],
                 "caption_hint": r["caption"],                    # Docling's printed caption
                 "context_text": context[:self.context_chars],    # reading-order neighbours

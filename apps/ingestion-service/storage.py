@@ -1,11 +1,15 @@
 # storage.py
+import logging
 import os
 import re
+import time
 from functools import lru_cache
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from config import get_settings
+
+log = logging.getLogger("storage")
 
 # AWS S3 endpoint: s3[.dualstack].{region}.amazonaws.com
 _AWS_ENDPOINT_RE = re.compile(r"\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com")
@@ -97,9 +101,13 @@ def list_folder_markers(prefix: str = "") -> list[str]:
 
 def download_file(key: str, dest_path: str) -> int:
     """Download a single object to dest_path. Creates parent dirs. Returns bytes written."""
+    t0 = time.perf_counter()
     os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
     _s3().download_file(_bucket(), key, dest_path)
-    return os.path.getsize(dest_path)
+    size = os.path.getsize(dest_path)
+    log.info("s3 download key=%s bytes=%d took=%.2fs",
+             key, size, time.perf_counter() - t0)
+    return size
 
 
 def upload_object(key: str, data: bytes, content_type: str | None = None) -> int:
@@ -126,6 +134,7 @@ def delete_object(key: str) -> str:
 
 def delete_prefix(prefix: str) -> list[str]:
     """Delete every object under the given prefix. Returns the keys removed."""
+    t0 = time.perf_counter()
     if not prefix.endswith("/"):
         prefix += "/"
     paginator = _s3().get_paginator("list_objects_v2")
@@ -134,6 +143,8 @@ def delete_prefix(prefix: str) -> list[str]:
         for obj in page.get("Contents", []) or []:
             keys.append(obj["Key"])
     if not keys:
+        log.info("s3 delete_prefix prefix=%s deleted=0 took=%.2fs",
+                 prefix, time.perf_counter() - t0)
         return []
     # DeleteObjects caps at 1000 keys per call
     for i in range(0, len(keys), 1000):
@@ -142,4 +153,6 @@ def delete_prefix(prefix: str) -> list[str]:
             Bucket=_bucket(),
             Delete={"Objects": [{"Key": k} for k in batch]},
         )
+    log.info("s3 delete_prefix prefix=%s deleted=%d took=%.2fs",
+             prefix, len(keys), time.perf_counter() - t0)
     return keys

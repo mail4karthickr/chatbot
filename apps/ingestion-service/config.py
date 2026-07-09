@@ -24,7 +24,12 @@ class Settings(BaseSettings):
     jina_api_key: str = Field(..., alias="JINA_API_KEY")
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
 
-    sync_url: str = Field(default="http://localhost:8002", alias="SYNC_URL")
+    sync_url: str = Field(default="http://localhost:8003", alias="SYNC_URL")
+
+    rabbitmq_url: str = Field(
+        default="amqp://app:app@localhost:5672/",
+        alias="RABBITMQ_URL",
+    )
 
 
 @lru_cache

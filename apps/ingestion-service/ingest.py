@@ -1,5 +1,5 @@
 # ingest.py
-import base64, logging, uuid
+import base64, logging, os, time, uuid
 from functools import lru_cache
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -12,6 +12,7 @@ from models import Chunk
 from config import get_settings
 
 log = logging.getLogger("ingest")
+user_log = logging.getLogger("user")  # human-friendly milestones for the UI "Info" view
 
 
 @lru_cache
@@ -87,20 +88,33 @@ def build_chunks(elements, doc_id, doc_version, source_path) -> list[Chunk]:
     return chunks
 
 
-def upsert_chunks(chunks):
+def upsert_chunks(chunks, job_id: str | None = None):
     texts  = [c.text for c in chunks]        # body for text chunks, caption for image chunks
-    sparse = embed_sparse(texts)             # BM25 over text/caption — the keyword half of hybrid
-
-    dense = [None] * len(chunks)
     txt_idx = [i for i, c in enumerate(chunks) if c.kind == "text"]
     img_idx = [i for i, c in enumerate(chunks) if c.kind == "image"]
+    log.info("embed start job_id=%s chunks=%d texts=%d images=%d",
+             job_id, len(chunks), len(txt_idx), len(img_idx))
+
+    t0 = time.perf_counter()
+    sparse = embed_sparse(texts)             # BM25 over text/caption — the keyword half of hybrid
+    log.info("embed sparse job_id=%s n=%d took=%.2fs",
+             job_id, len(texts), time.perf_counter() - t0)
+
+    dense = [None] * len(chunks)
 
     # text chunks: batch through Jina
+    t0 = time.perf_counter()
     for pos, vec in zip(txt_idx, embed_texts([chunks[i].text for i in txt_idx])):
         dense[pos] = vec
+    log.info("embed dense-text job_id=%s n=%d took=%.2fs",
+             job_id, len(txt_idx), time.perf_counter() - t0)
+
     # image chunks: blend pixels + caption (one call each; cache by image hash in prod)
+    t0 = time.perf_counter()
     for i in img_idx:
         dense[i] = embed_image_blended(get_image(chunks[i].image_key), chunks[i].text)
+    log.info("embed dense-image job_id=%s n=%d took=%.2fs",
+             job_id, len(img_idx), time.perf_counter() - t0)
 
     points = []
     for i, c in enumerate(chunks):
@@ -115,18 +129,29 @@ def upsert_chunks(chunks):
         ))
     BATCH = 64
     client = get_client()
+    t0 = time.perf_counter()
+    n_batches = 0
     for i in range(0, len(points), BATCH):
         client.upsert(COLLECTION, points=points[i:i + BATCH], wait=True)
+        n_batches += 1
+    log.info("qdrant upsert job_id=%s points=%d batches=%d took=%.2fs",
+             job_id, len(points), n_batches, time.perf_counter() - t0)
 
 
-def ingest_document(path: str, doc_id: str):
-    log.info("start doc_id=%s path=%s", doc_id, path)
+def ingest_document(path: str, doc_id: str, job_id: str | None = None):
+    size = os.path.getsize(path)
+    log.info("ingest start job_id=%s doc_id=%s path=%s size=%d",
+             job_id, doc_id, path, size)
 
+    t0 = time.perf_counter()
     elements, version = _get_parser().parse(path, doc_id)
     n_img = sum(1 for e in elements if e["kind"] == "image")
-    log.info("parsed doc_id=%s version=%s elements=%d images=%d",
-             doc_id, version, len(elements), n_img)
+    n_text = len(elements) - n_img
+    log.info("parsed job_id=%s doc_id=%s version=%s elements=%d images=%d took=%.2fs",
+             job_id, doc_id, version, len(elements), n_img, time.perf_counter() - t0)
+    user_log.info("Read document — %d text sections, %d images", n_text, n_img)
 
+    t0 = time.perf_counter()
     existing = get_client().scroll(
         COLLECTION, limit=1,
         scroll_filter=models.Filter(must=[
@@ -134,28 +159,45 @@ def ingest_document(path: str, doc_id: str):
             models.FieldCondition(key="doc_version", match=models.MatchValue(value=version)),
         ]),
     )[0]
+    log.info("version check job_id=%s doc_id=%s version=%s took=%.2fs",
+             job_id, doc_id, version, time.perf_counter() - t0)
     if existing:
-        log.info("unchanged doc_id=%s version=%s — skipping", doc_id, version)
+        log.info("unchanged job_id=%s doc_id=%s version=%s — skipping",
+                 job_id, doc_id, version)
         return {"status": "unchanged", "doc_id": doc_id, "version": version}
 
+    t0 = time.perf_counter()
     for e in elements:
         if e["kind"] == "image":
             put_image(e["image_key"], e["image_bytes"])
-    log.info("s3 upload done doc_id=%s images=%d", doc_id, n_img)
+    log.info("s3 image upload done job_id=%s doc_id=%s images=%d took=%.2fs",
+             job_id, doc_id, n_img, time.perf_counter() - t0)
 
+    t0 = time.perf_counter()
+    to_caption = sum(1 for e in elements if e["kind"] == "image" and "caption" not in e)
+    if to_caption:
+        user_log.info("Describing %d image%s using AI…", to_caption, "" if to_caption == 1 else "s")
     for e in elements:
         if e["kind"] == "image" and "caption" not in e:
             ctx = "\n".join(filter(None, [e.get("caption_hint", ""), e.get("context_text", "")]))
             e["caption"] = caption_image(e["image_bytes"], ctx)
-    log.info("captions done doc_id=%s images=%d", doc_id, n_img)
+    log.info("captions done job_id=%s doc_id=%s captioned=%d took=%.2fs",
+             job_id, doc_id, to_caption, time.perf_counter() - t0)
 
     chunks = build_chunks(elements, doc_id, version, path)
-    upsert_chunks(chunks)
-    log.info("upsert done doc_id=%s chunks=%d", doc_id, len(chunks))
+    user_log.info("Indexing %d pieces into the knowledge base…", len(chunks))
+    upsert_chunks(chunks, job_id=job_id)
+    log.info("upsert done job_id=%s doc_id=%s chunks=%d", job_id, doc_id, len(chunks))
+    user_log.info("Added %d pieces to the knowledge base", len(chunks))
 
+    t0 = time.perf_counter()
     get_client().delete(COLLECTION, points_selector=models.FilterSelector(filter=models.Filter(
         must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))],
         must_not=[models.FieldCondition(key="doc_version", match=models.MatchValue(value=version))],
     )))
-    log.info("indexed doc_id=%s version=%s chunks=%d", doc_id, version, len(chunks))
+    log.info("gc old-versions job_id=%s doc_id=%s took=%.2fs",
+             job_id, doc_id, time.perf_counter() - t0)
+
+    log.info("indexed job_id=%s doc_id=%s version=%s chunks=%d",
+             job_id, doc_id, version, len(chunks))
     return {"status": "indexed", "doc_id": doc_id, "version": version, "chunks": len(chunks)}

@@ -18,9 +18,11 @@ export function ResetConfirm() {
       }}
     >
       <div className="warning">
-        This will <b>wipe every row</b> from the sync-service ledger and{' '}
-        <b>drop the Qdrant collection</b>. Your S3 files are untouched — the next
-        ingest will re-process every file under <code>docs/</code> from scratch.
+        This will <b>wipe every row</b> from the sync-service ledger,{' '}
+        <b>drop the Qdrant collection</b>, and <b>clean up extracted image
+        artifacts</b> from S3 (under <code>_artifacts/</code>). Your source
+        files under <code>docs/</code> are untouched — the next ingest will
+        re-process every file from scratch.
       </div>
       <div className="warning">
         Testing utility only. There is no undo.

@@ -1,33 +1,34 @@
 # app.py
 import logging
-from pathlib import Path
 
+import pika
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from broker import publish_ingest_jobs
 from config import get_settings
-from ingest import ingest_document
+from events import EVENTS_EXCHANGE, ensure_events_topology, _params as _events_params
 from logging_config import setup_logging
-from rag import retrieve
+from rag import retrieve, warmup as rag_warmup
 from storage import (
     create_folder,
     delete_object,
     delete_prefix,
-    download_file,
     ensure_bucket,
     list_files,
     list_folder_markers,
     upload_object,
 )
-from sync_client import diff as sync_diff, mark_deleted, mark_failed, mark_ingested, reset_ledger
-from vectordb import create_collection, delete_by_doc_id, reset_collection
+from sync_client import diff as sync_diff, reset_ledger
+from vectordb import create_collection, reset_collection
 
-INGEST_DIR = Path(__file__).parent / "data" / "ingested"
 INGEST_PREFIX = "docs/"  # only S3 objects under this prefix are ingested
 
 setup_logging()
 log = logging.getLogger("app")
+user_log = logging.getLogger("user")  # human-friendly milestones for the UI "Info" view
 
 app = FastAPI(title="Multimodal RAG Pipeline")
 
@@ -47,6 +48,10 @@ def _startup():
     log.info("startup: ensuring bucket + qdrant collection")
     ensure_bucket()
     create_collection()
+    # Preload the reranker so the first /retrieve doesn't pay the model-load
+    # penalty (~5–10s cold). Runs async so uvicorn's ready signal isn't delayed.
+    import threading
+    threading.Thread(target=rag_warmup, daemon=True, name="rag-warmup").start()
     log.info("startup: ready")
 
 
@@ -137,22 +142,14 @@ async def s3_delete_folder(path: str):
     return {"deleted": deleted, "count": len(deleted)}
 
 
-@app.post("/ingest")
+@app.post("/ingest", status_code=202)
 def ingest():
-    """Reconcile S3 ↔ s3-sync-service ledger ↔ Qdrant.
+    """Reconcile S3 ↔ s3-sync-service ledger ↔ Qdrant by enqueuing per-key jobs.
 
-    Steps:
-      1. List every object in the S3 bucket.
-      2. Ask the s3-sync-service to classify them: {new, modified, deleted, unchanged}.
-      3. For new/modified — download, parse, embed, upsert into Qdrant, mark-ingested.
-      4. For deleted — drop the Qdrant points, sweep leftover image artifacts under
-         the doc_id prefix, mark-deleted (which hard-deletes the ledger row).
-      5. Skip unchanged.
-
-    Sync/blocking for now — will move to a RabbitMQ worker later.
+    Fast path: list S3, ask s3-sync-service to classify keys, publish one
+    RabbitMQ message per {new, modified, deleted} key. Workers drain the queue
+    asynchronously and update the ledger. Unchanged keys are skipped.
     """
-    INGEST_DIR.mkdir(parents=True, exist_ok=True)
-
     try:
         s3_files = list_files(prefix=INGEST_PREFIX)
     except Exception as e:
@@ -179,70 +176,55 @@ def ingest():
     log.info("diff new=%d modified=%d deleted=%d unchanged=%d",
              len(new_keys), len(modified), len(deleted), len(unchanged))
 
-    ingested_ok: list[str] = []
-    reingested_ok: list[str] = []
-    failed: list[dict] = []
+    items = [(k, "ingest") for k in new_keys + modified] + [(k, "delete") for k in deleted]
+    try:
+        job_ids = publish_ingest_jobs(items)
+    except Exception as e:
+        log.exception("publish to broker failed")
+        raise HTTPException(status_code=502, detail=f"broker unavailable: {e}")
 
-    for key in new_keys + modified:
-        dest = INGEST_DIR / key
-        try:
-            download_file(key, str(dest))
-            ingest_document(str(dest), doc_id=key)
-        except Exception as e:
-            log.exception("ingest failed key=%s", key)
-            failed.append({"key": key, "error": str(e)})
-            try:
-                mark_failed(key, str(e))
-            except Exception:
-                log.exception("mark_failed also failed key=%s", key)
-            continue
-        (ingested_ok if key in new_keys else reingested_ok).append(key)
-
-    if ingested_ok or reingested_ok:
-        try:
-            mark_ingested(ingested_ok + reingested_ok)
-        except Exception:
-            log.exception("mark_ingested failed")
-
-    deleted_ok: list[str] = []
-    for key in deleted:
-        try:
-            delete_by_doc_id(key)
-            delete_prefix(f"{key}/")  # sweep extracted image artifacts
-        except Exception as e:
-            log.exception("cleanup failed key=%s", key)
-            failed.append({"key": key, "error": f"cleanup: {e}"})
-            continue
-        deleted_ok.append(key)
-
-    if deleted_ok:
-        try:
-            mark_deleted(deleted_ok)
-        except Exception:
-            log.exception("mark_deleted failed")
-
-    log.info("ingest done new=%d modified=%d deleted=%d unchanged=%d failed=%d",
-             len(ingested_ok), len(reingested_ok), len(deleted_ok), len(unchanged), len(failed))
+    log.info("enqueued jobs=%d new=%d modified=%d deleted=%d unchanged=%d",
+             len(job_ids), len(new_keys), len(modified), len(deleted), len(unchanged))
+    if job_ids:
+        user_log.info("Queued %d file%s for processing", len(job_ids), "" if len(job_ids) == 1 else "s")
+    else:
+        user_log.info("Nothing to do — all files are already up to date")
     return {
-        "ingested": ingested_ok,
-        "reingested": reingested_ok,
-        "deleted": deleted_ok,
+        "enqueued": len(job_ids),
+        "new": new_keys,
+        "modified": modified,
+        "deleted": deleted,
         "unchanged": unchanged,
-        "failed": failed,
+        "job_ids": job_ids,
     }
 
 
 @app.post("/reset")
 def reset():
-    """Wipe Qdrant + s3-sync-service ledger. Testing utility — does NOT touch S3."""
+    """Wipe Qdrant, s3-sync-service ledger, and S3 image artifacts.
+
+    Source documents under INGEST_PREFIX are untouched — only the pipeline's
+    own extracted image PNGs (stored under _artifacts/) are swept.
+    """
     reset_collection()
     try:
         removed = reset_ledger()
     except Exception as e:
         log.exception("ledger reset failed")
         raise HTTPException(status_code=502, detail=f"ledger reset failed: {e}")
-    log.info("reset done qdrant=recreated ledger_rows_removed=%d", removed)
-    return {"qdrant": "recreated", "ledger_rows_removed": removed}
+    try:
+        artifacts = delete_prefix("_artifacts/")
+    except Exception as e:
+        log.exception("artifact sweep failed")
+        raise HTTPException(status_code=502, detail=f"artifact sweep failed: {e}")
+    log.info("reset done qdrant=recreated ledger_rows_removed=%d artifacts_removed=%d",
+             removed, len(artifacts))
+    user_log.info("Reset complete — knowledge base is empty and ready to start fresh")
+    return {
+        "qdrant": "recreated",
+        "ledger_rows_removed": removed,
+        "artifacts_removed": len(artifacts),
+    }
 
 
 @app.post("/retrieve")
@@ -254,3 +236,52 @@ async def retrieve_endpoint(req: RetrieveRequest):
     except Exception:
         log.exception("retrieve failed")
         raise
+
+
+@app.get("/events/stream")
+def events_stream():
+    """Server-Sent Events stream of every log record from the API and workers.
+
+    Each SSE message is one JSON object of shape:
+        {"type": "log", "ts": ..., "level": ..., "logger": ..., "message": ...}
+
+    The client (browser EventSource or `curl -N`) sees every log line from any
+    process that has the events LogEventHandler installed (API + workers).
+    """
+    import json as _json
+
+    def gen():
+        conn = pika.BlockingConnection(_events_params())
+        ch = conn.channel()
+        ensure_events_topology(ch)
+        # Anonymous exclusive queue, auto-deleted when this client disconnects.
+        result = ch.queue_declare(queue="", exclusive=True, auto_delete=True)
+        qname = result.method.queue
+        ch.queue_bind(exchange=EVENTS_EXCHANGE, queue=qname)
+
+        try:
+            yield f"data: {_json.dumps({'type': 'connected'})}\n\n"
+            # inactivity_timeout keeps the generator alive so we can emit
+            # SSE keep-alive comments and detect client disconnects promptly.
+            for method, _props, body in ch.consume(qname, inactivity_timeout=15.0):
+                if body is None:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {body.decode()}\n\n"
+                if method is not None:
+                    ch.basic_ack(method.delivery_tag)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # in case a reverse proxy is in front
+        },
+    )

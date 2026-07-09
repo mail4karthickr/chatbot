@@ -133,9 +133,12 @@ export const resetAllThunk = createAsyncThunk<{ ledger_rows_removed: number }, v
     try {
       const res = await resetAll()
       dispatch(clearIngest())
+      // /reset also sweeps S3 image artifacts, so the file tree is now stale.
+      // Re-fetch so the UI reflects the new (post-cleanup) bucket contents.
+      dispatch(fetchS3Files())
       dispatch(
         showFlash(
-          `Reset done — ${res.ledger_rows_removed} ledger row${res.ledger_rows_removed === 1 ? '' : 's'} removed, Qdrant recreated.`,
+          `Reset done — ${res.ledger_rows_removed} ledger row${res.ledger_rows_removed === 1 ? '' : 's'} removed, ${res.artifacts_removed} artifact${res.artifacts_removed === 1 ? '' : 's'} deleted, Qdrant recreated.`,
         ),
       )
       return { ledger_rows_removed: res.ledger_rows_removed }

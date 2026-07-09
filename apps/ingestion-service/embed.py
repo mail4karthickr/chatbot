@@ -1,10 +1,15 @@
 # embed.py
 import base64
+import logging
+import time
 from functools import lru_cache
 import requests
 import numpy as np
 from fastembed import SparseTextEmbedding
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from config import get_settings
+
+log = logging.getLogger("embed")
 
 _JINA_URL = "https://api.jina.ai/v1/embeddings"
 DIM = 1024
@@ -19,12 +24,31 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _is_transient(exc: BaseException) -> bool:
+    """Retry on network hiccups and 5xx from Jina; fail fast on 4xx (auth,
+    bad request — those need a code fix, not more attempts)."""
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return False
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(min=2, max=30),
+    retry=retry_if_exception(_is_transient),
+    reraise=True,
+)
 def _jina(inputs: list[dict], task: str) -> list[list[float]]:
     """inputs: list of {"text": ...} and/or {"image": <base64>} items."""
+    t0 = time.perf_counter()
     r = requests.post(
-        _JINA_URL, 
-        headers=_headers(), 
-        timeout=60, 
+        _JINA_URL,
+        headers=_headers(),
+        # 180s: text batches of ~50 chunks routinely take 30-90s on Jina's
+        # shared endpoint. Was 60s and timing out mid-batch.
+        timeout=180,
         json={
             "model": "jina-embeddings-v4",
             "dimensions": DIM,
@@ -35,6 +59,8 @@ def _jina(inputs: list[dict], task: str) -> list[list[float]]:
         }
     )
     r.raise_for_status()
+    log.info("jina task=%s inputs=%d took=%.2fs",
+             task, len(inputs), time.perf_counter() - t0)
     return [d["embedding"] for d in r.json()["data"]]
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
