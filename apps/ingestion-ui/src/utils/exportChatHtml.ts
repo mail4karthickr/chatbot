@@ -68,18 +68,18 @@ function renderFigureCard(
     return `<span class="unknown-figure">[figure:${esc(fallbackHandle)}]</span>`
   }
   const alt = esc(img.caption || img.image_key)
-  const src = dataUrl || img.url
-  const missing = !dataUrl
   const caption = img.caption
     ? `<div class="fig-caption">${esc(img.caption)}</div>`
     : ''
-  const warning = missing
-    ? `<div class="fig-warning">(image unavailable — presigned URL likely expired; original key ${esc(img.image_key)})</div>`
-    : ''
+  // Only embed the <img> when we successfully inlined the bytes as a data URL.
+  // Never fall back to img.url — that's an S3 presigned URL containing the AWS
+  // Access Key ID, which would leak into any shared or committed export.
+  const imgOrWarning = dataUrl
+    ? `<img src="${dataUrl}" alt="${alt}" />`
+    : `<div class="fig-warning">(image unavailable — presigned URL likely expired; original key ${esc(img.image_key)})</div>`
   return `<figure class="inline-fig">
-    <img src="${src}" alt="${alt}" />
+    ${imgOrWarning}
     ${caption}
-    ${warning}
   </figure>`
 }
 
@@ -176,14 +176,17 @@ function renderTurn(m: ChatMessage, byKey: Map<string, string>): string {
             ${(m.images ?? [])
               .map((img) => {
                 const dataUrl = byKey.get(img.image_key)
-                const src = dataUrl || img.url
-                const missing = !dataUrl
+                // Same rule as renderFigureCard: never emit img.url as fallback,
+                // it embeds an AWS Access Key ID via the presigned URL.
+                const imgTag = dataUrl
+                  ? `<img src="${dataUrl}" alt="${esc(img.caption || img.image_key)}" />`
+                  : ''
                 return `<figure class="raw-image">
-                  <img src="${src}" alt="${esc(img.caption || img.image_key)}" />
+                  ${imgTag}
                   <figcaption>
                     <span class="passage-score">score ${img.score.toFixed(3)}</span>
                     ${img.caption ? `<span class="fig-caption">${esc(img.caption)}</span>` : ''}
-                    ${missing ? `<span class="fig-warning">(image unavailable)</span>` : ''}
+                    ${!dataUrl ? `<span class="fig-warning">(image unavailable)</span>` : ''}
                   </figcaption>
                 </figure>`
               })

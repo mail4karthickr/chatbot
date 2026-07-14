@@ -3,6 +3,11 @@
 **/.env.local
 **/.env.*.local
 
+# Chat session exports embed S3 presigned URLs (which contain the AWS Access
+# Key ID) and inline PII from the corpus; never commit these
+chat-session-*.html
+**/chat-session-*.html
+
 # Claude Code — per-user permission allowlists (may contain literal secrets)
 **/.claude/settings.local.json
 
