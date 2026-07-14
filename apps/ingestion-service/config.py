@@ -31,6 +31,11 @@ class Settings(BaseSettings):
         alias="RABBITMQ_URL",
     )
 
+    # Model used by /generate for retrieval-grounded answer synthesis. Kept
+    # small by default (gpt-4o-mini) — this is a one-shot summarizer, not a
+    # tool-calling agent, so a lightweight model is enough.
+    generate_model: str = Field(default="gpt-4o-mini", alias="GENERATE_MODEL")
+
 
 @lru_cache
 def get_settings() -> Settings:

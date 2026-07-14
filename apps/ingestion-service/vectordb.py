@@ -23,7 +23,15 @@ def create_collection():
         vectors_config={
             "dense": models.VectorParams(size=DENSE_DIM, distance=models.Distance.COSINE),
         },
-        sparse_vectors_config={"sparse": models.SparseVectorParams()},
+        sparse_vectors_config={
+            # Modifier.IDF makes Qdrant apply inverse-document-frequency weighting
+            # at query time. fastembed's Qdrant/bm25 emits raw term frequencies;
+            # without this modifier the sparse leg is TF, not BM25 — rare/informative
+            # tokens (e.g. "cataract", "hernioplasty") don't outweigh common ones
+            # ("limit", "coverage"). The modifier is baked into the collection at
+            # creation time, so this only takes effect after reset_collection().
+            "sparse": models.SparseVectorParams(modifier=models.Modifier.IDF),
+        },
         # payload indexes make metadata filtering fast at scale
         on_disk_payload=True,
     )

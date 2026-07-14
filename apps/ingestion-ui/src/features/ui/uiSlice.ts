@@ -16,6 +16,8 @@ export type ModalState =
   | { kind: 'newFolder'; parentPath: string }
   | { kind: 'delete'; path: string; fileCount: number; totalSize: number }
   | { kind: 'deleteFile'; key: string; name: string; size: number }
+  | { kind: 'imagePreview'; key: string; name: string }
+  | { kind: 'parsePreview'; key: string; name: string }
   | { kind: 'reset' }
   | null
 

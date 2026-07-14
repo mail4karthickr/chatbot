@@ -78,6 +78,70 @@ export async function deleteFile(key: string): Promise<{ deleted: string }> {
   return jsonOrThrow<{ deleted: string }>(res)
 }
 
+// URL the browser can drop straight into an <img src>. Backed by GET /s3/object,
+// which streams the object bytes with the sniffed content-type — no presigned URL
+// dance, no S3 credentials leaked to the client.
+export function s3ObjectUrl(key: string): string {
+  return `${API_BASE}/s3/object?key=${encodeURIComponent(key)}`
+}
+
+// Current tail seq of the server-side event ring. Fetched before opening
+// /events/stream so the initial connect only replays events after this seq,
+// not the full history from prior ingest runs.
+export async function eventsCursor(): Promise<number> {
+  const res = await fetch(`${API_BASE}/events/cursor`)
+  const body = await jsonOrThrow<{ seq: number }>(res)
+  return body.seq
+}
+
+// Docling parse-preview types. The server runs Docling on an S3 object and
+// returns the flattened element list without touching the pipeline (no
+// captioning, no embedding, no Qdrant). Used by the "Preview parse" modal.
+export type ParsePreviewTextElement = {
+  kind: 'text'
+  page: number
+  text: string
+}
+
+export type ParsePreviewImageElement = {
+  kind: 'image'
+  page: number
+  image_key: string
+  caption_hint: string
+  context_text: string
+  img_index: number
+  image_size: number
+  // Omitted when the image exceeds max_image_bytes on the server.
+  image_data_url?: string
+}
+
+export type ParsePreviewElement = ParsePreviewTextElement | ParsePreviewImageElement
+
+export type ParsePreviewResponse = {
+  doc_id: string
+  version: string
+  etag: string
+  // 'hit' means the server returned a cached parse without hitting Docling;
+  // 'miss' means Docling actually ran. Useful for verifying caching visually.
+  cache: 'hit' | 'miss'
+  stats: {
+    elements: number
+    text: number
+    images: number
+    pages: number[]
+  }
+  elements: ParsePreviewElement[]
+}
+
+export async function parsePreview(key: string): Promise<ParsePreviewResponse> {
+  const res = await fetch(`${API_BASE}/parse-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+  return jsonOrThrow<ParsePreviewResponse>(res)
+}
+
 // Retrieval — hits the /retrieve endpoint which does hybrid search + rerank
 // and returns raw chunks/images. No LLM augmentation (that lives in agent-service).
 export type RetrievedChunk = {
@@ -93,11 +157,31 @@ export type RetrievedImage = {
   url: string
   caption: string
   score: number
+  // Short handle the LLM uses to embed the figure inline via [figure:HANDLE]
+  // tokens in the generated answer. Present only on /generate responses.
+  handle?: string
+}
+
+export type RetrieveTiming = {
+  search_ms: number
+  rerank_ms: number
+  total_ms: number
+  candidates: number
+  chunks: number
+  images: number
+  device: string
+  // Present only on /generate responses — how long the OpenAI synthesis took.
+  generate_ms?: number
 }
 
 export type RetrieveResponse = {
   chunks: RetrievedChunk[]
   images: RetrievedImage[]
+  timing?: RetrieveTiming
+}
+
+export type GenerateResponse = RetrieveResponse & {
+  answer: string
 }
 
 export async function retrieveQuery(query: string, top_n = 8): Promise<RetrieveResponse> {
@@ -107,6 +191,17 @@ export async function retrieveQuery(query: string, top_n = 8): Promise<RetrieveR
     body: JSON.stringify({ query, top_n }),
   })
   return jsonOrThrow<RetrieveResponse>(res)
+}
+
+// Same shape as /retrieve but the server also runs one OpenAI call to
+// synthesize an `answer` string grounded in the retrieved chunks.
+export async function generateQuery(query: string, top_n = 8): Promise<GenerateResponse> {
+  const res = await fetch(`${API_BASE}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, top_n }),
+  })
+  return jsonOrThrow<GenerateResponse>(res)
 }
 
 export type ResetResponse = {

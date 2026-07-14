@@ -3,7 +3,7 @@ import io
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.base_models import InputFormat
-from docling_core.types.doc import TextItem, TableItem, PictureItem
+from docling_core.types.doc import TextItem, TableItem, PictureItem, SectionHeaderItem
 from models import content_hash
 # The parser extracts and RETURNS image bytes; persisting them to object storage
 # is the orchestrator's job (§4.6). The parser performs no storage I/O.
@@ -40,7 +40,14 @@ class Parser:
         doc = self._converter.convert(path).document
 
         # 1) Flatten Docling items in READING ORDER (text / table / figure).
+        # Section headings are held in `pending_heading` and prepended to the next
+        # text/table element instead of being emitted as standalone chunks — bare
+        # headings ("Premium Details") were outranking their own content in retrieval
+        # (short-passage bias in BM25 + cross-encoder). SectionHeaderItem must be
+        # checked BEFORE TextItem: it's a subclass of TextItem, so a bare
+        # `isinstance(item, TextItem)` check catches headers too.
         raw = []
+        pending_heading = ""
         for item, _level in doc.iterate_items():
             if isinstance(item, PictureItem):
                 pil = item.get_image(doc)                       # PIL image (pixels)
@@ -50,12 +57,20 @@ class Parser:
                 raw.append({"kind": "image", "image_bytes": buf.getvalue(),
                             "caption": item.caption_text(doc) or "",
                             "page": _page_of(item)})
+            elif isinstance(item, SectionHeaderItem):
+                heading = (item.text or "").strip()
+                if heading:
+                    pending_heading = f"{pending_heading}\n{heading}" if pending_heading else heading
             elif isinstance(item, TableItem):
-                raw.append({"kind": "text", "text": item.export_to_markdown(),
-                            "page": _page_of(item)})
+                table_md = item.export_to_markdown()
+                text = f"{pending_heading}\n\n{table_md}" if pending_heading else table_md
+                raw.append({"kind": "text", "text": text, "page": _page_of(item)})
+                pending_heading = ""
             elif isinstance(item, TextItem) and (item.text or "").strip():
-                raw.append({"kind": "text", "text": item.text.strip(),
-                            "page": _page_of(item)})
+                body = item.text.strip()
+                text = f"{pending_heading}\n\n{body}" if pending_heading else body
+                raw.append({"kind": "text", "text": text, "page": _page_of(item)})
+                pending_heading = ""
 
         # 2) Build elements. For each figure, attach its Docling caption + the nearest
         #    text BEFORE and AFTER it IN READING ORDER. This replaces the old y-proximity

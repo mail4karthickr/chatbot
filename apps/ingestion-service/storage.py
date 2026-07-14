@@ -60,6 +60,23 @@ def get_image(key: str) -> bytes:
     return _s3().get_object(Bucket=_bucket(), Key=key)["Body"].read()
 
 
+def get_object(key: str) -> tuple[bytes, str | None]:
+    """Fetch a single object; return (bytes, content_type). Content-type may be None."""
+    obj = _s3().get_object(Bucket=_bucket(), Key=key)
+    return obj["Body"].read(), obj.get("ContentType")
+
+
+def head_object_etag(key: str) -> str:
+    """Return the object's ETag without transferring any bytes.
+
+    Used as a cheap cache key for downstream work (e.g. parse-preview) that
+    should invalidate the instant the underlying S3 object changes. S3
+    returns the ETag wrapped in double quotes; strip them so equality checks
+    match the value shipped in `list_files`."""
+    resp = _s3().head_object(Bucket=_bucket(), Key=key)
+    return (resp.get("ETag") or "").strip('"')
+
+
 def presigned_url(key: str, expires=3600) -> str:
     return _s3().generate_presigned_url(
         "get_object", Params={"Bucket": _bucket(), "Key": key}, ExpiresIn=expires

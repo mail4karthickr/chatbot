@@ -65,6 +65,40 @@ export function FileIcon() {
   )
 }
 
+export function DownloadIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M8 2v8m0 0l-3.2-3.2M8 10l3.2-3.2"
+        fill="none" stroke="currentColor" strokeWidth="1.6"
+        strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M2.5 12v1.5A1 1 0 003.5 14.5h9a1 1 0 001-1V12"
+        fill="none" stroke="currentColor" strokeWidth="1.6"
+        strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function DocScanIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M4 1.5h5.25L13 5.25V14a.5.5 0 01-.5.5h-8a.5.5 0 01-.5-.5V2a.5.5 0 01.5-.5z"
+        fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M9 1.5V5h4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M6 8h4M6 10h4M6 12h2.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export function EyeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"
+        fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+}
+
 export function EmptyBucketIcon() {
   return (
     <svg viewBox="0 0 24 24" width="40" height="40">

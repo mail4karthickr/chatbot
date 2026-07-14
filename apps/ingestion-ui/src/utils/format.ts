@@ -12,3 +12,13 @@ export function formatDate(iso: string): string {
     return iso
   }
 }
+
+const IMAGE_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif',
+])
+
+export function isImageName(name: string): boolean {
+  const i = name.lastIndexOf('.')
+  if (i < 0) return false
+  return IMAGE_EXTS.has(name.slice(i + 1).toLowerCase())
+}

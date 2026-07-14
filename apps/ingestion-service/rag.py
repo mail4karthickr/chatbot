@@ -14,6 +14,7 @@ from storage import presigned_url
 from vectordb import hybrid_search
 
 log = logging.getLogger("rag")
+user_log = logging.getLogger("user")  # friendly per-stage progress for the UI
 
 
 IMG_SCORE_THRESHOLD = 0.30   # tune on your golden set
@@ -48,36 +49,56 @@ def warmup() -> None:
     log.info("reranker warmup took=%.2fs", time.perf_counter() - t0)
 
 
-def _rerank(query: str, points, top_n=8):
+def _rerank_all(query: str, points, top_n: int = 8):
+    """Score text chunks and image candidates in a single CrossEncoder batch.
+
+    Image candidates are harvested from ALL Qdrant candidates, not just the
+    text top-N. This widens image recall AND removes the ordering dependency
+    that used to force two .predict() calls. Image chunks that are direct hits
+    reuse their text-pair score instead of being scored twice.
+    """
     if not points:
-        return []
-    pairs = [(query, p.payload["text"]) for p in points]
-    scores = _reranker().predict(pairs)
-    ranked = sorted(zip(points, scores), key=lambda x: x[1], reverse=True)
-    return [(p, float(s)) for p, s in ranked[:top_n]]
+        return [], []
 
-
-def _rerank_candidate_images(reranked, query):
-    """Images come from two sources — direct image hits and images linked to
-    a retrieved text chunk — then get reranked together."""
-    candidates: dict[str, dict] = {}  # image_key -> {"caption":..., "via":...}
-    for point, _ in reranked:
+    image_candidates: dict[str, dict] = {}   # image_key -> {"caption", "via"}
+    direct_score_idx: dict[str, int] = {}    # image_key -> index into points[]
+    for i, point in enumerate(points):
         p = point.payload
         if p["kind"] == "image" and p.get("image_key"):
-            candidates.setdefault(p["image_key"], {"caption": p["text"], "via": "direct"})
+            image_candidates.setdefault(p["image_key"], {"caption": p["text"], "via": "direct"})
+            direct_score_idx.setdefault(p["image_key"], i)
         for k in p.get("linked_image_keys", []) or []:
-            candidates.setdefault(k, {"caption": "", "via": "linked"})
+            image_candidates.setdefault(k, {"caption": "", "via": "linked"})
 
-    if not candidates:
-        return []
+    text_pairs = [(query, p.payload["text"]) for p in points]
+    linked_only_keys = [k for k in image_candidates if k not in direct_score_idx]
+    image_pairs = [(query, image_candidates[k]["caption"] or k) for k in linked_only_keys]
 
-    keys = list(candidates)
-    scored = _reranker().predict([(query, candidates[k]["caption"] or k) for k in keys])
-    ranked = sorted(zip(keys, scored), key=lambda x: x[1], reverse=True)
-    return [
-        (k, float(s), candidates[k]["caption"])
-        for k, s in ranked if s >= IMG_SCORE_THRESHOLD
+    user_log.info(
+        "Reranking %d text + %d image pair%s on %s",
+        len(text_pairs), len(image_pairs), "" if len(image_pairs) == 1 else "s",
+        _pick_device(),
+    )
+    all_scores = _reranker().predict(text_pairs + image_pairs)
+    text_scores = all_scores[: len(text_pairs)]
+    linked_scores = all_scores[len(text_pairs):]
+
+    reranked = sorted(zip(points, text_scores), key=lambda x: x[1], reverse=True)
+    reranked = [(p, float(s)) for p, s in reranked[:top_n]]
+
+    image_scores: dict[str, float] = {
+        k: float(text_scores[i]) for k, i in direct_score_idx.items()
+    }
+    image_scores.update({k: float(s) for k, s in zip(linked_only_keys, linked_scores)})
+
+    ranked_images = sorted(image_scores.items(), key=lambda x: x[1], reverse=True)
+    image_hits = [
+        (k, s, image_candidates[k]["caption"])
+        for k, s in ranked_images
+        if s >= IMG_SCORE_THRESHOLD
     ][:3]
+
+    return reranked, image_hits
 
 
 def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
@@ -90,21 +111,33 @@ def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
         }
     """
     t_total = time.perf_counter()
+    short_q = (query[:80] + "…") if len(query) > 80 else query
+    user_log.info("Searching for: %s", short_q)
+
     t0 = time.perf_counter()
     points   = hybrid_search(query, doc_ids=doc_ids, top_k=RERANK_CANDIDATE_POOL)
     t_search = time.perf_counter() - t0
 
+    n_text  = sum(1 for p in points if (p.payload or {}).get("kind") == "text")
+    n_image = sum(1 for p in points if (p.payload or {}).get("kind") == "image")
+    user_log.info(
+        "Vector search found %d candidate%s in %.2fs (%d text, %d image)",
+        len(points), "" if len(points) == 1 else "s", t_search, n_text, n_image,
+    )
+
     t0 = time.perf_counter()
-    reranked = _rerank(query, points, top_n=top_n)
+    reranked, image_hits = _rerank_all(query, points, top_n=top_n)
     t_rerank = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    image_hits = _rerank_candidate_images(reranked, query)
-    t_img = time.perf_counter() - t0
+    total_s = time.perf_counter() - t_total
+    user_log.info(
+        "Retrieval complete in %.2fs — %d passage%s, %d image%s",
+        total_s, len(reranked), "" if len(reranked) == 1 else "s",
+        len(image_hits), "" if len(image_hits) == 1 else "s",
+    )
 
-    log.info("retrieve timing search=%.2fs rerank=%.2fs images=%.2fs total=%.2fs points=%d reranked=%d img_candidates=%d",
-             t_search, t_rerank, t_img, time.perf_counter() - t_total,
-             len(points), len(reranked), len(image_hits))
+    log.info("retrieve timing search=%.2fs rerank=%.2fs total=%.2fs points=%d reranked=%d images=%d",
+             t_search, t_rerank, total_s, len(points), len(reranked), len(image_hits))
 
     chunks = [
         {
@@ -120,7 +153,19 @@ def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
         {"image_key": k, "url": presigned_url(k), "caption": caption, "score": score}
         for k, score, caption in image_hits
     ]
-    return {"chunks": chunks, "images": images}
+    return {
+        "chunks": chunks,
+        "images": images,
+        "timing": {
+            "search_ms": int(t_search * 1000),
+            "rerank_ms": int(t_rerank * 1000),
+            "total_ms":  int(total_s * 1000),
+            "candidates": len(points),
+            "chunks":     len(reranked),
+            "images":     len(image_hits),
+            "device":     _pick_device(),
+        },
+    }
 
 
 if __name__ == "__main__":
@@ -153,38 +198,35 @@ if __name__ == "__main__":
         assert r1 is r2, "singleton not cached"
         print(f"   {type(r1).__name__} loaded and cached")
 
-    def _test_rerank_empty():
-        assert _rerank("q", []) == []
-        print("   empty points → empty result")
+    def _test_rerank_all_empty():
+        reranked, images = _rerank_all("q", [])
+        assert reranked == [] and images == []
+        print("   empty points → ([], [])")
 
-    def _test_rerank_with_points():
+    def _test_rerank_all_text():
         points = [
             _mock_point("The mitochondrion is the powerhouse of the cell.", chunk_id="c1"),
             _mock_point("A random unrelated sentence about football.",       chunk_id="c2"),
             _mock_point("Cells convert glucose into ATP via cellular respiration.", chunk_id="c3"),
         ]
-        ranked = _rerank("what produces ATP in a cell?", points, top_n=2)
-        assert len(ranked) == 2
-        top_text = ranked[0][0].payload["text"]
-        print(f"   top score={ranked[0][1]:.4f}: {top_text!r}")
+        reranked, images = _rerank_all("what produces ATP in a cell?", points, top_n=2)
+        assert len(reranked) == 2 and images == []
+        top_text = reranked[0][0].payload["text"]
+        print(f"   top score={reranked[0][1]:.4f}: {top_text!r}")
         assert "ATP" in top_text or "mitochondrion" in top_text, "reranker put an unrelated hit on top"
 
-    def _test_rerank_images_empty():
-        assert _rerank_candidate_images([], "q") == []
-        print("   no image candidates → empty result")
-
-    def _test_rerank_images_with_candidates():
-        reranked = [
-            (_mock_point("The heart pumps blood.", kind="text",
-                         linked_image_keys=["img/heart.png"]), 0.9),
-            (_mock_point("Diagram of a mitochondrion.", kind="image",
-                         image_key="img/mito.png"), 0.85),
-            (_mock_point("Unrelated caption about football.", kind="image",
-                         image_key="img/ball.png"), 0.6),
+    def _test_rerank_all_images():
+        points = [
+            _mock_point("The heart pumps blood.", kind="text",
+                        linked_image_keys=["img/heart.png"], chunk_id="c1"),
+            _mock_point("Diagram of a mitochondrion.", kind="image",
+                        image_key="img/mito.png", chunk_id="c2"),
+            _mock_point("Unrelated caption about football.", kind="image",
+                        image_key="img/ball.png", chunk_id="c3"),
         ]
-        result = _rerank_candidate_images(reranked, "show me a diagram of the mitochondria")
-        print(f"   {len(result)} image(s) passed threshold {IMG_SCORE_THRESHOLD}:")
-        for key, score, caption in result:
+        _, images = _rerank_all("show me a diagram of the mitochondria", points)
+        print(f"   {len(images)} image(s) passed threshold {IMG_SCORE_THRESHOLD}:")
+        for key, score, caption in images:
             print(f"     - {key}: score={score:.4f} caption={caption!r}")
 
     def _test_retrieve_end_to_end():
@@ -240,10 +282,9 @@ if __name__ == "__main__":
             client.delete_collection(TEST_COLLECTION)
 
     _run("_reranker() (singleton, disk load)",    _test_reranker_singleton)
-    _run("_rerank (empty)",                       _test_rerank_empty)
-    _run("_rerank (mock points)",                 _test_rerank_with_points)
-    _run("_rerank_candidate_images (empty)",      _test_rerank_images_empty)
-    _run("_rerank_candidate_images (mock hits)",  _test_rerank_images_with_candidates)
+    _run("_rerank_all (empty)",                   _test_rerank_all_empty)
+    _run("_rerank_all (text-only)",               _test_rerank_all_text)
+    _run("_rerank_all (with images)",             _test_rerank_all_images)
     _run("retrieve() end-to-end (Qdrant)",        _test_retrieve_end_to_end)
 
     print()

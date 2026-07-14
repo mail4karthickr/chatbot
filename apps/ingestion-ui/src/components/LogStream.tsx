@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { eventsCursor } from '../api'
 import { useAppDispatch, useAppSelector } from '../app/hooks'
 import {
   clearEntries,
@@ -31,23 +32,38 @@ export function LogStream() {
 
   useEffect(() => {
     if (!streaming) return
-    const es = new EventSource('/events/stream')
-    es.onmessage = (e) => {
-      try {
-        const evt = JSON.parse(e.data) as ServerEvent
-        dispatch(entryReceived(evt))
-        // When a worker job finishes (success or failure), the S3 tree is
-        // stale — a successful ingest wrote artifacts under _artifacts/,
-        // a failed one may have written a partial set. Refetch so the UI
-        // reflects reality without the user having to hit Refresh.
-        if (isJobTerminalEvent(evt)) {
-          dispatch(fetchS3Files())
+    let es: EventSource | null = null
+    let cancelled = false
+    // Grab the server's current tail seq first so we only see events that
+    // happen *after* this connect — otherwise re-clicking Ingest would dump
+    // the ring buffer of the previous run into the fresh log view. If the
+    // handshake fails (server down), fall back to since=0 and the server's
+    // "cursor > current_seq → reset" branch takes care of it.
+    eventsCursor()
+      .catch(() => 0)
+      .then((since) => {
+        if (cancelled) return
+        es = new EventSource(`/events/stream?since=${since}`)
+        es.onmessage = (e) => {
+          try {
+            const evt = JSON.parse(e.data) as ServerEvent
+            dispatch(entryReceived(evt))
+            // When a worker job finishes (success or failure), the S3 tree is
+            // stale — a successful ingest wrote artifacts under _artifacts/,
+            // a failed one may have written a partial set. Refetch so the UI
+            // reflects reality without the user having to hit Refresh.
+            if (isJobTerminalEvent(evt)) {
+              dispatch(fetchS3Files())
+            }
+          } catch {
+            // ignore malformed frames — the server may emit non-JSON keepalives
+          }
         }
-      } catch {
-        // ignore malformed frames — the server may emit non-JSON keepalives
-      }
+      })
+    return () => {
+      cancelled = true
+      if (es) es.close()
     }
-    return () => es.close()
   }, [streaming, dispatch])
 
   useEffect(() => {
