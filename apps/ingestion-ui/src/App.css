@@ -1153,8 +1153,42 @@
   font-size: 14px;
   line-height: 1.55;
   color: var(--fg);
-  white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+/* Markdown blocks inside answers (react-markdown output). Keep spacing tight —
+   these live inside a chat bubble, not a document page. */
+.chat-answer-text p,
+.chat-answer-text ul,
+.chat-answer-text ol {
+  margin: 0 0 0.6em;
+}
+.chat-answer-text > :last-child,
+.chat-answer-text p:last-child {
+  margin-bottom: 0;
+}
+.chat-answer-text ul,
+.chat-answer-text ol {
+  padding-left: 1.4em;
+}
+.chat-answer-text li {
+  margin: 0.15em 0;
+}
+.chat-answer-text code {
+  font-size: 0.9em;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+}
+.chat-answer-text table {
+  border-collapse: collapse;
+  margin: 0 0 0.6em;
+}
+.chat-answer-text th,
+.chat-answer-text td {
+  border: 1px solid var(--border, #ddd);
+  padding: 0.25em 0.6em;
+  text-align: left;
 }
 
 /* Figure the LLM embedded inline via [figure:HANDLE]. Rendered as a block-

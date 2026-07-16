@@ -9,7 +9,7 @@ import logging
 import time
 from functools import lru_cache
 
-from openai import OpenAI
+from openai import NOT_GIVEN, OpenAI
 
 from config import get_settings
 
@@ -76,8 +76,12 @@ def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tup
     context = _format_context(chunks, images)
     user_log.info("Generating answer with %s", settings.generate_model)
     t0 = time.perf_counter()
+    # GPT-5-family reasoning models only accept the default temperature (1);
+    # sending a custom value is a 400. Keep 0.2 for older models (gpt-4o etc.).
+    temperature = NOT_GIVEN if settings.generate_model.startswith("gpt-5") else 0.2
     resp = _client().chat.completions.create(
         model=settings.generate_model,
+        temperature=temperature,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -90,7 +94,6 @@ def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tup
                 ),
             },
         ],
-        temperature=0.2,
     )
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     answer = (resp.choices[0].message.content or "").strip()

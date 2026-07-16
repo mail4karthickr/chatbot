@@ -18,6 +18,8 @@ _AWS_ENDPOINT_RE = re.compile(r"\.([a-z]{2}-[a-z]+-\d+)\.amazonaws\.com")
 def _resolve_region(endpoint: str, explicit: str | None) -> str:
     if explicit:
         return explicit
+    if "r2.cloudflarestorage.com" in (endpoint or ""):
+        return "auto"  # R2 has no regions; SigV4 signing expects the literal "auto"
     m = _AWS_ENDPOINT_RE.search(endpoint or "")
     return m.group(1) if m else "us-east-1"
 

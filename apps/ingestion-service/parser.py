@@ -3,10 +3,23 @@ import io
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.base_models import InputFormat
-from docling_core.types.doc import TextItem, TableItem, PictureItem, SectionHeaderItem
+from docling.chunking import HybridChunker
+from docling_core.types.doc import PictureItem
+from docling_core.transforms.chunker.hierarchical_chunker import (
+    ChunkingDocSerializer, ChunkingSerializerProvider)
+from docling_core.transforms.chunker.tokenizer.huggingface import HuggingFaceTokenizer
+from docling_core.transforms.serializer.markdown import MarkdownTableSerializer
 from models import content_hash
 # The parser extracts and RETURNS image bytes; persisting them to object storage
 # is the orchestrator's job (§4.6). The parser performs no storage I/O.
+
+
+class _MarkdownTableProvider(ChunkingSerializerProvider):
+    """Keep tables as markdown in chunk text (matches preview UI and the shape
+    the eval was scored against) instead of the default 'row, col = value'
+    triplet sentences."""
+    def get_serializer(self, doc):
+        return ChunkingDocSerializer(doc=doc, table_serializer=MarkdownTableSerializer())
 
 
 class Parser:
@@ -21,10 +34,20 @@ class Parser:
     linked caption, and `context_text` (its reading-order neighbours). `version`
     is a content hash of the file. Downstream (caption -> chunk -> embed) is
     unchanged — only the *quality* of the context improves.
+
+    Text chunking is delegated to Docling's HybridChunker: it walks the layout
+    TREE (not the flat item list), packs sibling items under the same heading
+    path up to `max_tokens`, and prepends that heading path to each chunk via
+    contextualize(). This is what prevents bare heading/label fragments
+    ("Premium Details", "Authorized Signatory") from becoming standalone
+    chunks — short exact-match chunks were outranking their own content in
+    retrieval (short-passage bias in BM25 + cross-encoder). It is robust to
+    Docling classifying visually-styled headings as plain TextItem, because
+    chunk boundaries come from the tree + token budget, not item types.
     """
 
     def __init__(self, images_scale: float = 2.0, do_ocr: bool = True,
-                 context_chars: int = 1500):
+                 context_chars: int = 1500, max_tokens: int = 1024):
         opts = PdfPipelineOptions()
         opts.generate_picture_images = True   # so figures carry pixel data we can embed/return
         opts.images_scale = images_scale      # render figures at 2x for caption/embed quality
@@ -32,6 +55,14 @@ class Parser:
         opts.do_table_structure = True        # recover table cell structure
         self._converter = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+        self._chunker = HybridChunker(
+            # tokenizer is used for token COUNTING only (chunk size control),
+            # not to run the model — a "sequence length > 512" warning is spurious.
+            tokenizer=HuggingFaceTokenizer.from_pretrained(
+                "sentence-transformers/all-MiniLM-L6-v2", max_tokens=max_tokens),
+            serializer_provider=_MarkdownTableProvider(),
+            merge_peers=True,                 # pack small same-heading siblings together
+        )
         self.context_chars = context_chars
 
     def parse(self, path: str, doc_id: str) -> tuple[list[dict], str]:
@@ -39,16 +70,16 @@ class Parser:
             version = content_hash(f.read())
         doc = self._converter.convert(path).document
 
-        # 1) Flatten Docling items in READING ORDER (text / table / figure).
-        # Section headings are held in `pending_heading` and prepended to the next
-        # text/table element instead of being emitted as standalone chunks — bare
-        # headings ("Premium Details") were outranking their own content in retrieval
-        # (short-passage bias in BM25 + cross-encoder). SectionHeaderItem must be
-        # checked BEFORE TextItem: it's a subclass of TextItem, so a bare
-        # `isinstance(item, TextItem)` check catches headers too.
+        # 1) Two streams, one order. Images come from the flat iterate_items()
+        #    walk; text chunks come from HybridChunker (which excludes pictures).
+        #    Both are stamped with the item's position in Docling's reading order
+        #    (a text chunk gets the position of its FIRST constituent item), then
+        #    merged by that ordinal — no bbox geometry needed, and build_chunks's
+        #    bidirectional image<->text linking keeps working on the flat list.
+        order: dict[str, int] = {}
         raw = []
-        pending_heading = ""
-        for item, _level in doc.iterate_items():
+        for idx, (item, _level) in enumerate(doc.iterate_items()):
+            order[item.self_ref] = idx
             if isinstance(item, PictureItem):
                 pil = item.get_image(doc)                       # PIL image (pixels)
                 if pil is None:
@@ -56,26 +87,24 @@ class Parser:
                 buf = io.BytesIO(); pil.convert("RGB").save(buf, format="PNG")
                 raw.append({"kind": "image", "image_bytes": buf.getvalue(),
                             "caption": item.caption_text(doc) or "",
-                            "page": _page_of(item)})
-            elif isinstance(item, SectionHeaderItem):
-                heading = (item.text or "").strip()
-                if heading:
-                    pending_heading = f"{pending_heading}\n{heading}" if pending_heading else heading
-            elif isinstance(item, TableItem):
-                table_md = item.export_to_markdown()
-                text = f"{pending_heading}\n\n{table_md}" if pending_heading else table_md
-                raw.append({"kind": "text", "text": text, "page": _page_of(item)})
-                pending_heading = ""
-            elif isinstance(item, TextItem) and (item.text or "").strip():
-                body = item.text.strip()
-                text = f"{pending_heading}\n\n{body}" if pending_heading else body
-                raw.append({"kind": "text", "text": text, "page": _page_of(item)})
-                pending_heading = ""
+                            "page": _page_of(item), "order": idx})
+
+        for ch in self._chunker.chunk(doc):
+            items = list(ch.meta.doc_items or [])
+            ordinals = [order[it.self_ref] for it in items if it.self_ref in order]
+            page = next((p.page_no for it in items
+                         for p in (getattr(it, "prov", None) or [])), 0)
+            text = self._chunker.contextualize(chunk=ch).strip()  # heading path prepended
+            if not text:
+                continue
+            raw.append({"kind": "text", "text": text, "page": page,
+                        "order": min(ordinals) if ordinals else len(order)})
+
+        raw.sort(key=lambda r: r["order"])                       # restore reading order
 
         # 2) Build elements. For each figure, attach its Docling caption + the nearest
-        #    text BEFORE and AFTER it IN READING ORDER. This replaces the old y-proximity
-        #    heuristic: "before/after" is now true narrative order from the layout model,
-        #    correct across columns.
+        #    text BEFORE and AFTER it IN READING ORDER. Those neighbours are now full
+        #    sections (not fragments), so caption context quality improves too.
         elements, img_index = [], 0
         for i, r in enumerate(raw):
             if r["kind"] == "text":

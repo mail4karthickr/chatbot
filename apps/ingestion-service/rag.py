@@ -91,11 +91,19 @@ def _rerank_all(query: str, points, top_n: int = 8):
     }
     image_scores.update({k: float(s) for k, s in zip(linked_only_keys, linked_scores)})
 
+    # The cross-encoder scores caption pairs systematically low (F6), so a
+    # fixed absolute cutoff starves the figures list even for images that WIN
+    # the passage ranking. An image that made the top-N passages has earned
+    # its place; the threshold only gates linked-only extras.
+    top_image_keys = {
+        p.payload["image_key"] for p, _ in reranked
+        if p.payload["kind"] == "image" and p.payload.get("image_key")
+    }
     ranked_images = sorted(image_scores.items(), key=lambda x: x[1], reverse=True)
     image_hits = [
         (k, s, image_candidates[k]["caption"])
         for k, s in ranked_images
-        if s >= IMG_SCORE_THRESHOLD
+        if k in top_image_keys or s >= IMG_SCORE_THRESHOLD
     ][:3]
 
     return reranked, image_hits

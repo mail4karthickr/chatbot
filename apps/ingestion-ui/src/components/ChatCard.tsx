@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { generateQuery, retrieveQuery } from '../api'
 import type { RetrievedChunk, RetrievedImage } from '../api'
 import { exportChatHtml } from '../utils/exportChatHtml'
@@ -353,7 +354,7 @@ function AnswerBody({
     <div className="chat-answer-text">
       {parts.map((part, i) =>
         part.type === 'text' ? (
-          <Fragment key={i}>{part.value}</Fragment>
+          <ReactMarkdown key={i}>{part.value}</ReactMarkdown>
         ) : byHandle.has(part.handle) ? (
           <InlineFigure key={i} image={byHandle.get(part.handle)!} />
         ) : (
