@@ -10,6 +10,8 @@ chat-session-*.html
 
 # Local parsing/eval scratch area — real insurance PDFs (PII) and parse dumps
 parsing_test_files/
+Insurance*.pdf
+**/Insurance*.pdf
 
 # Claude Code — per-user permission allowlists (may contain literal secrets)
 **/.claude/settings.local.json
