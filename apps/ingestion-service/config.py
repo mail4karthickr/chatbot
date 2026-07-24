@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # tool-calling agent, so a lightweight model is enough.
     generate_model: str = Field(default="gpt-4o-mini", alias="GENERATE_MODEL")
 
+    # Model used to caption extracted figures at ingest time. Runs once per
+    # image, so cost is negligible — pick for vision instruction-following,
+    # not price. gpt-5-mini resisted the context-contamination failure that
+    # gpt-4o-mini exhibited (described the neighbouring premium table
+    # instead of the signature in the pixels).
+    caption_model: str = Field(default="gpt-5-mini", alias="CAPTION_MODEL")
+
 
 @lru_cache
 def get_settings() -> Settings:

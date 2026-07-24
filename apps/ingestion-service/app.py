@@ -33,7 +33,7 @@ from storage import (
     upload_object,
 )
 from sync_client import diff as sync_diff, reset_ledger
-from vectordb import create_collection, reset_collection
+from vectordb import create_collection, list_doc_summaries, reset_collection
 
 INGEST_PREFIX = "docs/"  # only S3 objects under this prefix are ingested
 
@@ -280,6 +280,15 @@ def reset():
     }
 
 
+@app.get("/documents")
+async def documents_endpoint():
+    """Document catalog: doc_id + routing summary for every ingested document.
+    The agent uses this to pick doc_ids for scoped retrieval."""
+    docs = list_doc_summaries()
+    log.info("documents catalog served n=%d", len(docs))
+    return {"documents": docs}
+
+
 @app.post("/retrieve")
 async def retrieve_endpoint(req: RetrieveRequest):
     log.info("retrieve received len=%d doc_ids=%s top_n=%d",
@@ -307,20 +316,38 @@ async def generate_endpoint(req: RetrieveRequest):
         log.exception("generate: retrieve failed")
         raise
     try:
-        answer, generate_ms = synthesize_answer(
+        answer, source_chunk_ids, generate_ms = synthesize_answer(
             req.query, retrieved["chunks"], retrieved["images"],
         )
     except Exception:
         log.exception("generate: synthesis failed")
         raise
+
+    # Resolve cited chunk_ids into UI-friendly source refs. chunk_id format is
+    # "<doc_id>:<ordinal>:<kind>", so the document is recoverable by splitting
+    # off the last two segments — no extra lookup needed. Dedup by (doc, page):
+    # two cited chunks from the same page collapse into one source entry.
+    by_id = {c["chunk_id"]: c for c in retrieved["chunks"]}
+    sources, seen = [], set()
+    for cid in source_chunk_ids:
+        doc_id = cid.rsplit(":", 2)[0]
+        page = by_id[cid].get("page")
+        if (doc_id, page) in seen:
+            continue
+        seen.add((doc_id, page))
+        sources.append({"doc_id": doc_id, "page": page, "chunk_id": cid})
+
     timing = dict(retrieved.get("timing") or {})
     timing["generate_ms"] = generate_ms
     if "total_ms" in timing:
         timing["total_ms"] = int(timing["total_ms"]) + generate_ms
     return {
         "answer": answer,
+        "sources": sources,
         "chunks": retrieved["chunks"],
         "images": retrieved["images"],
+        "routing": retrieved.get("routing"),
+        "expansion": retrieved.get("expansion"),
         "timing": timing,
     }
 

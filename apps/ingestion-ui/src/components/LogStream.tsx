@@ -10,6 +10,7 @@ import {
 } from '../features/events/eventsSlice'
 import type { LogFilter, LogLevel, ServerEvent } from '../features/events/eventsSlice'
 import { fetchS3Files } from '../features/s3/s3Slice'
+import { fetchCatalog } from '../features/catalog/catalogSlice'
 
 /**
  * Live tail of the ingestion-service event stream.
@@ -54,6 +55,8 @@ export function LogStream() {
             // reflects reality without the user having to hit Refresh.
             if (isJobTerminalEvent(evt)) {
               dispatch(fetchS3Files())
+              // A finished ingest wrote/replaced the doc's routing summary.
+              dispatch(fetchCatalog())
             }
           } catch {
             // ignore malformed frames — the server may emit non-JSON keepalives

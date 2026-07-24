@@ -1,7 +1,10 @@
 # rag.py
 """Retrieval-only: return reranked text chunks + relevant image references.
 
-Generation lives in the agent-service; this module is deliberately LLM-free.
+Generation lives in the agent-service; this module stays generation-free.
+The one LLM touchpoint is doc-level ROUTING (router.py): when the caller
+passes no doc_ids, the router may scope the search to the documents the
+question targets. Routing decides WHERE to search, never what to answer.
 """
 import logging
 import time
@@ -10,6 +13,7 @@ from functools import lru_cache
 import torch
 from sentence_transformers import CrossEncoder
 
+from router import analyze_query
 from storage import presigned_url
 from vectordb import hybrid_search
 
@@ -114,16 +118,38 @@ def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
 
     Returns:
         {
-          "chunks": [{chunk_id, text, page, kind, score}, ...],
-          "images": [{image_key, url, caption, score}, ...],
+          "chunks":  [{chunk_id, text, page, kind, score}, ...],
+          "images":  [{image_key, url, caption, score}, ...],
+          "routing": {routed, doc_ids?/reason},   # was the search doc-scoped?
         }
     """
     t_total = time.perf_counter()
     short_q = (query[:80] + "…") if len(query) > 80 else query
     user_log.info("Searching for: %s", short_q)
 
+    # Query analysis (routing + expansion): only when the caller didn't scope
+    # explicitly. Explicit doc_ids always win (future agent-service / UI
+    # picker control) and get exact single-query behavior.
     t0 = time.perf_counter()
-    points   = hybrid_search(query, doc_ids=doc_ids, top_k=RERANK_CANDIDATE_POOL)
+    if doc_ids:
+        routing = {"routed": False, "reason": "doc_ids provided by caller"}
+        variants = []
+    else:
+        doc_ids, variants, routing = analyze_query(query)
+        if routing["routed"]:
+            user_log.info("Scoping search to: %s", ", ".join(doc_ids))
+        if variants:
+            user_log.info("Also searching as: %s", " | ".join(variants))
+    t_route = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    points   = hybrid_search([query] + variants, doc_ids=doc_ids, top_k=RERANK_CANDIDATE_POOL)
+    if not points and routing["routed"]:
+        # The router scoped us into an empty result (e.g. doc deleted since
+        # the catalog was read). Routing must never lose answers — fall back.
+        log.warning("routed search empty — retrying unscoped")
+        routing = {"routed": False, "reason": "routed search was empty; searched all"}
+        points = hybrid_search([query] + variants, doc_ids=None, top_k=RERANK_CANDIDATE_POOL)
     t_search = time.perf_counter() - t0
 
     n_text  = sum(1 for p in points if (p.payload or {}).get("kind") == "text")
@@ -164,7 +190,10 @@ def retrieve(query: str, doc_ids=None, top_n: int = 8) -> dict:
     return {
         "chunks": chunks,
         "images": images,
+        "routing": routing,
+        "expansion": {"variants": variants},
         "timing": {
+            "route_ms":  int(t_route * 1000),
             "search_ms": int(t_search * 1000),
             "rerank_ms": int(t_rerank * 1000),
             "total_ms":  int(total_s * 1000),

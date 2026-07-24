@@ -71,8 +71,11 @@ export function ChatCard() {
         querySucceeded({
           id,
           answer: 'answer' in res ? res.answer : undefined,
+          sources: 'sources' in res ? res.sources : undefined,
           chunks: res.chunks,
           images: res.images,
+          routing: res.routing,
+          expansion: res.expansion,
           timing: res.timing,
           durationMs: performance.now() - t0,
         }),
@@ -167,6 +170,11 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(2)} s`
 }
 
+/** "docs/InsuranceFather.pdf" -> "InsuranceFather.pdf" for display. */
+function docName(docId: string): string {
+  return docId.split('/').pop() || docId
+}
+
 function ChatTurn({ m, events }: { m: ChatMessage; events: LogEntry[] }) {
   // Live per-stage progress lines. Any `user`-logger event newer than the
   // message's startedAt is treated as belonging to this query. ISO timestamps
@@ -208,6 +216,16 @@ function ChatTurn({ m, events }: { m: ChatMessage; events: LogEntry[] }) {
             <div className="chat-answer">
               <div className="chat-answer-label">Answer</div>
               <AnswerBody answer={m.answer} images={m.images ?? []} />
+              {(m.sources?.length ?? 0) > 0 && (
+                <div className="chat-sources">
+                  <span className="chat-sources-label">Sources</span>
+                  {m.sources!.map((s) => (
+                    <span key={s.chunk_id} className="source-chip">
+                      {docName(s.doc_id)} · p.{s.page}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <div className="chat-response-meta">
@@ -222,6 +240,12 @@ function ChatTurn({ m, events }: { m: ChatMessage; events: LogEntry[] }) {
           </div>
           {m.timing && (
             <div className="chat-timing">
+              {m.timing.route_ms !== undefined && (
+                <>
+                  <span>router {formatDuration(m.timing.route_ms)}</span>
+                  <span>·</span>
+                </>
+              )}
               <span>vector search {formatDuration(m.timing.search_ms)}</span>
               <span>·</span>
               <span>rerank {formatDuration(m.timing.rerank_ms)}</span>
@@ -235,6 +259,21 @@ function ChatTurn({ m, events }: { m: ChatMessage; events: LogEntry[] }) {
               <span>{m.timing.candidates} candidates</span>
               <span>·</span>
               <span>{m.timing.device}</span>
+            </div>
+          )}
+          {(m.routing?.routed || (m.expansion?.variants.length ?? 0) > 0) && (
+            <div className="chat-analysis">
+              {m.routing?.routed && (
+                <span>
+                  Searched in: {m.routing.doc_ids!.map(docName).join(', ')}
+                </span>
+              )}
+              {(m.expansion?.variants.length ?? 0) > 0 && (
+                <span>
+                  Also searched as:{' '}
+                  {m.expansion!.variants.map((v) => `“${v}”`).join(' · ')}
+                </span>
+              )}
             </div>
           )}
           {(m.chunks?.length ?? 0) === 0 && (m.images?.length ?? 0) === 0 ? (

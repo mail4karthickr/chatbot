@@ -1,6 +1,13 @@
 import { createSlice, nanoid } from '@reduxjs/toolkit'
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { RetrievedChunk, RetrievedImage, RetrieveTiming } from '../../api'
+import type {
+  Expansion,
+  RetrievedChunk,
+  RetrievedImage,
+  RetrieveTiming,
+  Routing,
+  SourceRef,
+} from '../../api'
 
 export type ChatMessage = {
   id: string
@@ -14,8 +21,14 @@ export type ChatMessage = {
   generated?: boolean
   // OpenAI-synthesized answer, only set when generated=true and the call succeeded.
   answer?: string
+  // Sources the generated answer relied on (doc + page, deduped) — rendered
+  // as chips under the answer; the answer text itself is citation-free.
+  sources?: SourceRef[]
   chunks?: RetrievedChunk[]
   images?: RetrievedImage[]
+  // Query-analysis metadata: doc-routing decision + expansion variants.
+  routing?: Routing
+  expansion?: Expansion
   // Server-reported per-stage timing (search, rerank, total, device, counts).
   timing?: RetrieveTiming
   error?: string
@@ -104,8 +117,11 @@ const chatSlice = createSlice({
       action: PayloadAction<{
         id: string
         answer?: string
+        sources?: SourceRef[]
         chunks: RetrievedChunk[]
         images: RetrievedImage[]
+        routing?: Routing
+        expansion?: Expansion
         timing?: RetrieveTiming
         durationMs: number
       }>,
@@ -114,8 +130,11 @@ const chatSlice = createSlice({
       if (!m) return
       m.status = 'success'
       m.answer = action.payload.answer
+      m.sources = action.payload.sources
       m.chunks = action.payload.chunks
       m.images = action.payload.images
+      m.routing = action.payload.routing
+      m.expansion = action.payload.expansion
       m.timing = action.payload.timing
       m.durationMs = action.payload.durationMs
     },

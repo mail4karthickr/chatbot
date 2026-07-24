@@ -4,6 +4,7 @@ import ingestReducer from '../features/ingest/ingestSlice'
 import uiReducer from '../features/ui/uiSlice'
 import eventsReducer, { persistEvents } from '../features/events/eventsSlice'
 import chatReducer, { persistChat } from '../features/chat/chatSlice'
+import catalogReducer from '../features/catalog/catalogSlice'
 
 export const store = configureStore({
   reducer: {
@@ -12,6 +13,7 @@ export const store = configureStore({
     ui: uiReducer,
     events: eventsReducer,
     chat: chatReducer,
+    catalog: catalogReducer,
   },
   middleware: (getDefault) =>
     getDefault({

@@ -1,4 +1,4 @@
-import { useAppDispatch } from '../../app/hooks'
+import { useAppDispatch, useAppSelector } from '../../app/hooks'
 import { openModal } from '../../features/ui/uiSlice'
 import type { FileNode } from '../../utils/tree'
 import { formatBytes, formatDate, isImageName } from '../../utils/format'
@@ -14,6 +14,9 @@ function isParseable(name: string): boolean {
 
 export function FileRow({ node }: { node: FileNode }) {
   const dispatch = useAppDispatch()
+  // Routing summary written at ingest time; doc_id == the S3 key, so only
+  // ingested documents (docs/ prefix) ever have an entry here.
+  const docSummary = useAppSelector((s) => s.catalog.byDocId[node.path])
   const stop = (e: React.MouseEvent) => e.stopPropagation()
   const isImage = isImageName(node.name)
   const canParse = isParseable(node.name)
@@ -26,6 +29,7 @@ export function FileRow({ node }: { node: FileNode }) {
       openModal({ kind: 'parsePreview', key: node.path, name: node.name }),
     )
   return (
+    <>
     <div className="row file-row">
       <div className="row-name" style={{ paddingLeft: node.depth * 24 }}>
         <span className="chev-spacer" />
@@ -91,5 +95,20 @@ export function FileRow({ node }: { node: FileNode }) {
         </button>
       </div>
     </div>
+    {docSummary && (
+      <div
+        className="file-summary"
+        // depth indent + 48px so the text starts under the filename, not the icon
+        style={{ paddingLeft: node.depth * 24 + 48 }}
+        title={docSummary.summary}
+      >
+        {docSummary.summary}
+        <span className="file-summary-meta">
+          {' '}· {docSummary.pages} page{docSummary.pages === 1 ? '' : 's'} ·{' '}
+          {docSummary.chunks} chunk{docSummary.chunks === 1 ? '' : 's'} indexed
+        </span>
+      </div>
+    )}
+    </>
   )
 }

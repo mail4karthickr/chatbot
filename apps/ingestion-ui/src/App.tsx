@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAppDispatch } from './app/hooks'
 import { fetchS3Files } from './features/s3/s3Slice'
+import { fetchCatalog } from './features/catalog/catalogSlice'
 import { Banners } from './components/Banners'
 import { ChatCard } from './components/ChatCard'
 import { Header } from './components/Header'
@@ -25,6 +26,7 @@ function App() {
 
   useEffect(() => {
     dispatch(fetchS3Files())
+    dispatch(fetchCatalog())
   }, [dispatch])
 
   useEffect(() => {

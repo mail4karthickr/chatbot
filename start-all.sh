@@ -3,7 +3,7 @@
 #
 # Infra (docker):   rabbitmq (apps/rabbitmq), postgres (apps/s3-sync-service)
 # Python services:  s3-sync-service :8003, ingestion-service :8000,
-#                   ingestion-worker (no port), agent-service :8001
+#                   ingestion-worker x$WORKERS (no port), agent-service :8001
 # UIs (vite):       ingestion-ui, agent-ui
 #
 # Logs stream to ./logs/<service>.log. Ctrl+C stops everything.
@@ -76,7 +76,16 @@ log "postgres is up on localhost:5433"
 
 start_bg s3-sync-service    "$APPS/s3-sync-service"    ./start-dev-server.sh
 start_bg ingestion-service  "$APPS/ingestion-service"  ./start-dev-server.sh
-start_bg ingestion-worker   "$APPS/ingestion-service"  ./start-worker.sh
+
+# Competing consumers: RabbitMQ round-robins ingestion.jobs across worker
+# replicas (each holds one job at a time — prefetch=1), so N workers ingest
+# N documents concurrently. Each replica loads its own Docling models, so
+# keep this small on a laptop. Override with WORKERS=3 ./start-all.sh
+WORKERS="${WORKERS:-2}"
+for i in $(seq 1 "$WORKERS"); do
+  start_bg "ingestion-worker-$i" "$APPS/ingestion-service" ./start-worker.sh
+done
+
 start_bg agent-service      "$APPS/agent-service"      ./start-dev-server.sh
 
 # --- UIs --------------------------------------------------------------------

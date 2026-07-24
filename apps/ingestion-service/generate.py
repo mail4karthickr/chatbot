@@ -10,6 +10,7 @@ import time
 from functools import lru_cache
 
 from openai import NOT_GIVEN, OpenAI
+from pydantic import BaseModel
 
 from config import get_settings
 
@@ -22,8 +23,11 @@ SYSTEM_PROMPT = (
     "corpus. You are given a set of ranked passages plus (sometimes) figures "
     "retrieved for the user's question. Answer using only what those passages "
     "support; if they don't cover it, say so plainly instead of guessing.\n\n"
-    "Citations: cite each passage you rely on inline with its chunk_id in square "
-    "brackets, e.g. [medical_study:5:text].\n\n"
+    "Citations: do NOT cite passages inline in the answer text — the answer "
+    "is shown to an end user and must read as clean prose. Instead, list the "
+    "chunk_ids of every passage you actually relied on in the "
+    "source_chunk_ids field. Only include passages that directly support "
+    "your answer, not everything that was retrieved.\n\n"
     "Figures: when a retrieved figure directly supports a point, embed it inline "
     "by writing the token [figure:HANDLE] on its own line at the exact spot in the "
     "answer where the figure best belongs (e.g. right after the sentence that "
@@ -32,6 +36,14 @@ SYSTEM_PROMPT = (
     "do not embed figures that don't clearly support the answer, and do not list "
     "all figures at the end just because they were retrieved."
 )
+
+
+class GroundedAnswer(BaseModel):
+    """Structured synthesis output: clean end-user prose + machine-readable
+    sources. Citations stay OUT of the answer text — the UI renders sources
+    separately."""
+    answer: str
+    source_chunk_ids: list[str]
 
 
 @lru_cache
@@ -60,14 +72,15 @@ def _format_context(chunks: list[dict], images: list[dict]) -> str:
     return "\n\n".join(lines) if lines else "(no passages were retrieved)"
 
 
-def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tuple[str, int]:
+def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tuple[str, list[str], int]:
     """Ask OpenAI for a grounded answer with optional inline figure tokens.
 
     Mutates `images` in place: each image gets a `handle` field (f1, f2, ...)
     that the caller can use to look up the URL when the frontend replaces
     `[figure:HANDLE]` tokens with actual thumbnails.
 
-    Returns (answer, elapsed_ms).
+    Returns (answer, source_chunk_ids, elapsed_ms). The answer is clean
+    end-user prose (no inline citations); sources arrive as data.
     """
     settings = get_settings()
     for i, img in enumerate(images, start=1):
@@ -79,9 +92,10 @@ def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tup
     # GPT-5-family reasoning models only accept the default temperature (1);
     # sending a custom value is a 400. Keep 0.2 for older models (gpt-4o etc.).
     temperature = NOT_GIVEN if settings.generate_model.startswith("gpt-5") else 0.2
-    resp = _client().chat.completions.create(
+    resp = _client().beta.chat.completions.parse(
         model=settings.generate_model,
         temperature=temperature,
+        response_format=GroundedAnswer,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -96,8 +110,17 @@ def synthesize_answer(query: str, chunks: list[dict], images: list[dict]) -> tup
         ],
     )
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    answer = (resp.choices[0].message.content or "").strip()
-    log.info("generate model=%s took=%dms answer_len=%d",
-             settings.generate_model, elapsed_ms, len(answer))
+    msg = resp.choices[0].message
+    if msg.refusal or msg.parsed is None:
+        raise RuntimeError(f"synthesis refused/empty: {msg.refusal!r}")
+    answer = msg.parsed.answer.strip()
+
+    # The LLM's citations are claims, not facts — keep only ids that exist in
+    # the retrieved set, preserving rerank order.
+    cited = set(msg.parsed.source_chunk_ids)
+    sources = [c["chunk_id"] for c in chunks if c.get("chunk_id") in cited]
+
+    log.info("generate model=%s took=%dms answer_len=%d sources=%d",
+             settings.generate_model, elapsed_ms, len(answer), len(sources))
     user_log.info("Answer ready in %.2fs", elapsed_ms / 1000)
-    return answer, elapsed_ms
+    return answer, sources, elapsed_ms

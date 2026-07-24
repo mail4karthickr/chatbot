@@ -2,6 +2,7 @@ import { useAppDispatch, useAppSelector } from '../app/hooks'
 import { clearEntries, startStreaming } from '../features/events/eventsSlice'
 import { runIngest } from '../features/ingest/ingestSlice'
 import { fetchS3Files } from '../features/s3/s3Slice'
+import { fetchCatalog } from '../features/catalog/catalogSlice'
 import { openModal } from '../features/ui/uiSlice'
 
 export function Header() {
@@ -36,7 +37,10 @@ export function Header() {
         </button>
         <button
           className="btn secondary"
-          onClick={() => dispatch(fetchS3Files())}
+          onClick={() => {
+            dispatch(fetchS3Files())
+            dispatch(fetchCatalog())
+          }}
           disabled={loadingList || ingesting}
         >
           {loadingList ? 'Refreshing…' : 'Refresh'}

@@ -1,5 +1,4 @@
 # embed.py
-import base64
 import logging
 import time
 from functools import lru_cache
@@ -69,27 +68,22 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 def embed_query(query: str) -> list[float]:
     return _jina([{"text": query}], task="retrieval.query")[0]
 
-def embed_image_blended(image_bytes: bytes, caption: str) -> list[float]:
-    """Pattern B: average the image (pixels) and caption (text) vectors, re-normalize.
-    Both live in Jina's shared space, so the blend is meaningful."""
-    b64 = base64.b64encode(image_bytes).decode()
-    inputs = [{"image": b64}] + ([{"text": caption}] if caption else [])
-    vecs = _jina(inputs, task="retrieval.passage")
-    v = np.mean([np.array(x) for x in vecs], axis=0)       # blend image (+ caption)
-    return (v / (np.linalg.norm(v) + 1e-12)).tolist()      # re-normalize the average
+def embed_queries(queries: list[str]) -> list[list[float]]:
+    """All query variants in ONE Jina call — same latency as a single query."""
+    return _jina([{"text": q} for q in queries], task="retrieval.query")
+
+# NOTE: image-pixel embedding was removed on 2026-07-23 (plan step 4a).
+# Image chunks are embedded by their pixels-only caption via embed_texts —
+# the A/B in parsing_test_files/test_4a_embedding_ab.py showed the
+# image+caption blend added nothing the reranker didn't erase. Pixels live
+# in S3 only. Revisit (named-vectors strategy) if chart-dense documents
+# arrive whose captions can't carry the visual content.
 
 def embed_sparse(texts: list[str]):
     return list(_sparse.embed(texts))                       # BM25 SparseEmbedding objects
 
 
 if __name__ == "__main__":
-    # jina-embeddings-v4 requires images ≥ 28x28; generate a 32x32 red PNG in memory.
-    import io
-    from PIL import Image
-    _buf = io.BytesIO()
-    Image.new("RGB", (32, 32), (200, 30, 30)).save(_buf, format="PNG")
-    SAMPLE_IMAGE = _buf.getvalue()
-
     def _summary(v: list[float]) -> str:
         arr = np.array(v)
         return f"dim={len(v)}, norm={np.linalg.norm(arr):.4f}, head={[round(x, 4) for x in v[:3]]}"
@@ -113,13 +107,9 @@ if __name__ == "__main__":
         v = embed_query("what is retrieval augmented generation?")
         print(f"   {_summary(v)}")
 
-    def _test_embed_image_blended_with_caption():
-        v = embed_image_blended(SAMPLE_IMAGE, "a tiny test image")
-        print(f"   {_summary(v)}")
-
-    def _test_embed_image_blended_no_caption():
-        v = embed_image_blended(SAMPLE_IMAGE, "")
-        print(f"   {_summary(v)}")
+    def _test_embed_queries():
+        v = embed_queries(["what is the premium?", "premium amount payable"])
+        print(f"   got {len(v)} vectors; [0] {_summary(v[0])}")
 
     def _test_embed_sparse():
         v = embed_sparse(["hello world", "multimodal rag"])
@@ -128,8 +118,7 @@ if __name__ == "__main__":
 
     _run("embed_texts",                            _test_embed_texts)
     _run("embed_query",                            _test_embed_query)
-    _run("embed_image_blended (image + caption)",  _test_embed_image_blended_with_caption)
-    _run("embed_image_blended (image only)",       _test_embed_image_blended_no_caption)
+    _run("embed_queries (batch)",                  _test_embed_queries)
     _run("embed_sparse",                           _test_embed_sparse)
 
     print()

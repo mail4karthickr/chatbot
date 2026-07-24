@@ -163,6 +163,9 @@ export type RetrievedImage = {
 }
 
 export type RetrieveTiming = {
+  // Router LLM call (doc routing + query expansion). Absent on messages
+  // persisted before the router existed.
+  route_ms?: number
   search_ms: number
   rerank_ms: number
   total_ms: number
@@ -174,14 +177,39 @@ export type RetrieveTiming = {
   generate_ms?: number
 }
 
+// Query-analysis metadata from the retrieval stage: whether the search was
+// scoped to specific documents (LLM doc-router) and which query variants
+// were added for extra recall (multi-query expansion).
+export type Routing = {
+  routed: boolean
+  doc_ids?: string[]   // present when routed=true
+  reason?: string      // present when routed=false — why the search was unscoped
+}
+
+export type Expansion = {
+  variants: string[]   // rephrasings searched alongside the original question
+}
+
+// A source the generated answer actually relied on (deduped by doc+page).
+// Distinct from `chunks`: chunks = everything retrieved; sources = what the
+// answer used. Rendered as chips under the answer instead of inline citations.
+export type SourceRef = {
+  doc_id: string       // e.g. "docs/InsuranceFather.pdf"
+  page: number
+  chunk_id: string     // kept for future click-to-passage navigation
+}
+
 export type RetrieveResponse = {
   chunks: RetrievedChunk[]
   images: RetrievedImage[]
+  routing?: Routing
+  expansion?: Expansion
   timing?: RetrieveTiming
 }
 
 export type GenerateResponse = RetrieveResponse & {
   answer: string
+  sources?: SourceRef[]
 }
 
 export async function retrieveQuery(query: string, top_n = 8): Promise<RetrieveResponse> {
@@ -202,6 +230,21 @@ export async function generateQuery(query: string, top_n = 8): Promise<GenerateR
     body: JSON.stringify({ query, top_n }),
   })
   return jsonOrThrow<GenerateResponse>(res)
+}
+
+// Document catalog — one routing summary per ingested document, generated at
+// ingest time and stored as a kind='doc_summary' point in Qdrant. Keyed by
+// doc_id, which equals the S3 object key (e.g. "docs/InsuranceFather.pdf").
+export type DocSummary = {
+  doc_id: string
+  summary: string
+  pages: number
+  chunks: number
+}
+
+export async function listDocuments(): Promise<{ documents: DocSummary[] }> {
+  const res = await fetch(`${API_BASE}/documents`)
+  return jsonOrThrow<{ documents: DocSummary[] }>(res)
 }
 
 export type ResetResponse = {
