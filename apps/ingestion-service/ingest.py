@@ -168,7 +168,7 @@ def upsert_chunks(chunks, job_id: str | None = None):
 
     dense = [None] * len(chunks)
 
-    # text chunks: batch through Jina
+    # text chunks: one batched embeddings call
     t0 = time.perf_counter()
     for pos, vec in zip(txt_idx, embed_texts([chunks[i].text for i in txt_idx])):
         dense[pos] = vec

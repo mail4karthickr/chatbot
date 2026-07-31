@@ -26,7 +26,7 @@ from config import get_settings
 from ingest import ingest_document
 from logging_config import setup_logging
 from storage import delete_prefix, download_file, ensure_bucket
-from sync_client import mark_deleted, mark_failed, mark_ingested
+from sync_client import mark_deleted, mark_ingested
 from vectordb import create_collection, delete_by_doc_id
 
 setup_logging()
@@ -38,7 +38,7 @@ user_log = logging.getLogger("user")
 DOWNLOAD_DIR = Path(__file__).parent / "data" / "ingested"
 
 
-def _handle_ingest(s3_key: str, job_id: str) -> None:
+def _handle_ingest(s3_key: str, job_id: str, file_state: dict) -> None:
     dest = DOWNLOAD_DIR / s3_key
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -52,8 +52,10 @@ def _handle_ingest(s3_key: str, job_id: str) -> None:
     log.info("ingest done job_id=%s s3_key=%s took=%.2fs",
              job_id, s3_key, time.perf_counter() - t0)
 
+    # Registry upsert: report the object state (etag/size/last_modified from
+    # the job message, observed at listing time) that is now in the index.
     t0 = time.perf_counter()
-    mark_ingested([s3_key])
+    mark_ingested([{"s3_key": s3_key, **file_state}])
     log.info("mark_ingested done job_id=%s s3_key=%s took=%.2fs",
              job_id, s3_key, time.perf_counter() - t0)
 
@@ -96,20 +98,24 @@ def _on_message(ch, method, properties, body: bytes) -> None:
 
     try:
         if op == "ingest":
-            _handle_ingest(s3_key, job_id=job_id)
+            file_state = {
+                "etag": payload["etag"],
+                "size": payload["size"],
+                "last_modified": payload["last_modified"],
+            }
+            _handle_ingest(s3_key, job_id=job_id, file_state=file_state)
         elif op == "delete":
             _handle_delete(s3_key, job_id=job_id)
         else:
             raise ValueError(f"unknown op: {op!r}")
     except Exception as e:
+        # No registry write on failure — the doc stays absent/stale in the
+        # ledger, so the next /ingest click's diff re-enqueues it (that IS
+        # the retry mechanism). Ack so a poisoned message won't loop.
         elapsed = time.perf_counter() - t_start
         log.exception("job failed job_id=%s s3_key=%s took=%.2fs",
                       job_id, s3_key, elapsed)
         user_log.error("Failed to process %s — %s", filename, _short_error(e))
-        try:
-            mark_failed(s3_key, str(e))
-        except Exception:
-            log.exception("mark_failed also failed job_id=%s", job_id)
         ch.basic_ack(delivery_tag=method.delivery_tag)
         return
 

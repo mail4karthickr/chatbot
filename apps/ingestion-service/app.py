@@ -202,11 +202,12 @@ def ingest():
         log.exception("s3 list failed during ingest")
         raise HTTPException(status_code=502, detail=str(e))
 
+    by_key = {f["key"]: f for f in s3_files}
     diff_payload = [{
         "s3_key": f["key"],
-        "s3_etag": f["etag"],
-        "s3_size": f["size"],
-        "s3_last_modified": f["last_modified"],
+        "etag": f["etag"],
+        "size": f["size"],
+        "last_modified": f["last_modified"],
     } for f in s3_files]
 
     try:
@@ -222,7 +223,10 @@ def ingest():
     log.info("diff new=%d modified=%d deleted=%d unchanged=%d",
              len(new_keys), len(modified), len(deleted), len(unchanged))
 
-    items = [(k, "ingest") for k in new_keys + modified] + [(k, "delete") for k in deleted]
+    # Ingest jobs carry the observed object state so the worker can report
+    # exactly what it ingested to the registry (mark-ingested upsert).
+    items = ([(k, "ingest", by_key[k]) for k in new_keys + modified]
+             + [(k, "delete", None) for k in deleted])
     try:
         job_ids = publish_ingest_jobs(items)
     except Exception as e:

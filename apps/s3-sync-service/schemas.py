@@ -5,16 +5,16 @@ from pydantic import BaseModel, ConfigDict
 
 
 class S3FileState(BaseModel):
-    """Snapshot of a single S3 object as observed by the caller."""
+    """Snapshot of a single S3 object as observed/ingested by the caller."""
     s3_key: str
-    s3_etag: str
-    s3_size: int
-    s3_last_modified: datetime
+    etag: str
+    size: int
+    last_modified: datetime
 
 
 class DiffRequest(BaseModel):
     files: list[S3FileState]
-    prefix: str | None = None  # if set, only ledger rows under this prefix are considered
+    prefix: str | None = None   # scope ledger reads to one prefix
 
 
 class DiffResponse(BaseModel):
@@ -25,12 +25,7 @@ class DiffResponse(BaseModel):
 
 
 class MarkIngestedRequest(BaseModel):
-    keys: list[str]
-
-
-class MarkFailedRequest(BaseModel):
-    key: str
-    error: str
+    files: list[S3FileState]    # the object state that was actually ingested
 
 
 class MarkDeletedRequest(BaseModel):
@@ -41,15 +36,10 @@ class FileRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     s3_key: str
-    s3_etag: str
-    s3_size: int
-    s3_last_modified: datetime
-    ingested_etag: str | None
-    ingested_at: datetime | None
-    status: str
-    error: str | None
-    created_at: datetime
-    updated_at: datetime
+    etag: str
+    size: int
+    last_modified: datetime
+    ingested_at: datetime
 
 
 class FileListResponse(BaseModel):

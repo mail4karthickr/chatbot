@@ -1,0 +1,6 @@
+# Eval-suite dependencies — separate from the service's runtime requirements
+# (iOS analogy: the test target's own dependency list). Installed into
+# evals/.venv, never into the service venv.
+deepeval        # LLM eval framework, runs as a pytest plugin
+pytest          # test runner (deepeval builds on it; listed explicitly for direct use)
+httpx           # HTTP client to call the running service black-box (POST /retrieve, /generate)

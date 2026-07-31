@@ -25,10 +25,12 @@ def ensure_topology(ch) -> None:
     ch.queue_bind(queue=QUEUE, exchange=EXCHANGE, routing_key=ROUTING_KEY)
 
 
-def publish_ingest_jobs(items: list[tuple[str, str]]) -> list[str]:
-    """Publish one message per (s3_key, op) tuple. `op` is "ingest" or "delete".
-    Returns the generated job_ids in input order. One connection per call —
-    fine for burst-per-request use; revisit if we ever publish outside /ingest.
+def publish_ingest_jobs(items: list[tuple[str, str, dict | None]]) -> list[str]:
+    """Publish one message per (s3_key, op, file_state) tuple. `op` is "ingest"
+    or "delete". For ingest ops, `file_state` = {etag, size, last_modified} as
+    observed at listing time — the worker reports it to the registry on
+    success. Returns the generated job_ids in input order. One connection per
+    call — fine for burst-per-request use.
     """
     if not items:
         return []
@@ -38,14 +40,19 @@ def publish_ingest_jobs(items: list[tuple[str, str]]) -> list[str]:
     with pika.BlockingConnection(params) as conn:
         ch = conn.channel()
         ensure_topology(ch)
-        for s3_key, op in items:
+        for s3_key, op, state in items:
             job_id = str(uuid.uuid4())
-            body = json.dumps({
+            msg = {
                 "job_id": job_id,
                 "s3_key": s3_key,
                 "op": op,
                 "attempt": 1,
-            }).encode()
+            }
+            if state is not None:
+                msg["etag"] = state["etag"]
+                msg["size"] = state["size"]
+                msg["last_modified"] = state["last_modified"]
+            body = json.dumps(msg).encode()
             ch.basic_publish(
                 exchange=EXCHANGE,
                 routing_key=ROUTING_KEY,

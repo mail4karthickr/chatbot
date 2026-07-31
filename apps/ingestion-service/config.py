@@ -21,8 +21,13 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(..., alias="QDRANT_URL")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
 
-    jina_api_key: str = Field(..., alias="JINA_API_KEY")
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
+
+    # Dense embedding model for chunks + queries. Text-only: images are
+    # represented by their vision-model captions, so a multimodal embedder
+    # (the old jina-embeddings-v4) bought nothing. Changing this model (or
+    # its dimensions) invalidates every stored vector — reset + re-ingest.
+    embed_model: str = Field(default="text-embedding-3-small", alias="EMBED_MODEL")
 
     sync_url: str = Field(default="http://localhost:8003", alias="SYNC_URL")
 
@@ -63,7 +68,7 @@ if __name__ == "__main__":
     print("S3_SECRET_KEY  =", _mask(s.s3_secret_key))
     print("QDRANT_URL     =", s.qdrant_url)
     print("QDRANT_API_KEY =", _mask(s.qdrant_api_key) if s.qdrant_api_key else "<unset (ok if local)>")
-    print("JINA_API_KEY   =", _mask(s.jina_api_key))
     print("OPENAI_API_KEY =", _mask(s.openai_api_key))
+    print("EMBED_MODEL    =", s.embed_model)
     print()
     print("OK — all required fields parsed successfully")

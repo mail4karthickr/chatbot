@@ -494,6 +494,47 @@
 .image-preview-status.error {
   color: var(--err);
 }
+/* path-hint is a column elsewhere; the preview needs code + counter on one line */
+.image-preview .path-hint {
+  flex-direction: row;
+  align-items: center;
+}
+.image-preview-counter {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.image-preview-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.image-preview-nav:hover:not(:disabled) {
+  opacity: 1;
+}
+.image-preview-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.image-preview-nav.prev {
+  left: 10px;
+}
+.image-preview-nav.next {
+  right: 10px;
+}
 
 /* ----- docling parse preview modal ----- */
 

@@ -1,17 +1,10 @@
 # models.py
 from datetime import datetime, timezone
-from enum import Enum as PyEnum
 
-from sqlalchemy import BigInteger, DateTime, Enum, String, Text, func
+from sqlalchemy import BigInteger, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
-
-
-class IngestStatus(str, PyEnum):
-    PENDING = "pending"
-    INGESTED = "ingested"
-    FAILED = "failed"
 
 
 def _now() -> datetime:
@@ -19,43 +12,26 @@ def _now() -> datetime:
 
 
 class File(Base):
-    """Every S3 object we know about + the state of its last successful ingest.
+    """Registry of successfully ingested documents — one row per doc that is
+    IN the vector index. Rows are written only by mark-ingested (upsert) and
+    removed only by mark-deleted. Failures write nothing: a failed document
+    is absent (or stale), so the next /diff classifies it as new (or
+    modified) and ingestion retries it naturally.
 
-    Diff logic (see /diff endpoint):
-        new       — key seen in S3, not in this table
-        modified  — key in both, but s3_etag != ingested_etag (or never ingested)
+    Diff logic (see /diff — pure read):
+        new       — key in S3, not in this table
+        modified  — key in both, S3 etag != stored etag
         deleted   — key in this table, no longer in S3
-        unchanged — key in both, s3_etag == ingested_etag
+        unchanged — key in both, etags match
     """
 
     __tablename__ = "files"
 
-    # S3 key is the natural PK — bucket-scoped uniqueness assumed for this service instance
     s3_key: Mapped[str] = mapped_column(String, primary_key=True)
-
-    # Current S3 state — refreshed on every diff/upsert call
-    s3_etag: Mapped[str] = mapped_column(String, nullable=False)
-    s3_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    s3_last_modified: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    # State of the last successful ingest — null until mark-ingested is called
-    ingested_etag: Mapped[str | None] = mapped_column(String, nullable=True)
-    ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    status: Mapped[IngestStatus] = mapped_column(
-        Enum(IngestStatus, name="ingest_status"),
-        nullable=False,
-        default=IngestStatus.PENDING,
+    etag: Mapped[str] = mapped_column(String, nullable=False)   # of the ingested object
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_modified: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=_now, server_default=func.now(), onupdate=_now,
     )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_now, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_now, onupdate=_now,
-        server_default=func.now(),
-    )
-
-    def is_up_to_date(self) -> bool:
-        return self.ingested_etag is not None and self.ingested_etag == self.s3_etag

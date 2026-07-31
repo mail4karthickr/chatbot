@@ -34,22 +34,16 @@ def diff(files: list[dict], prefix: str | None = None) -> dict:
     return result
 
 
-def mark_ingested(keys: list[str]) -> None:
-    if not keys:
+def mark_ingested(files: list[dict]) -> None:
+    """POST /files/mark-ingested (registry upsert). Items must carry
+    s3_key, etag, size, last_modified — the object state that was ingested."""
+    if not files:
         return
     t0 = time.perf_counter()
-    r = _client().post("/files/mark-ingested", json={"keys": keys})
+    r = _client().post("/files/mark-ingested", json={"files": files})
     r.raise_for_status()
-    log.info("mark_ingested keys=%d took=%.2fs",
-             len(keys), time.perf_counter() - t0)
-
-
-def mark_failed(key: str, error: str) -> None:
-    t0 = time.perf_counter()
-    r = _client().post("/files/mark-failed", json={"key": key, "error": error})
-    r.raise_for_status()
-    log.info("mark_failed key=%s took=%.2fs",
-             key, time.perf_counter() - t0)
+    log.info("mark_ingested files=%d took=%.2fs",
+             len(files), time.perf_counter() - t0)
 
 
 def mark_deleted(keys: list[str]) -> None:

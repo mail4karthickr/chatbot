@@ -5,7 +5,7 @@ from config import get_settings
 from embed import embed_queries, embed_sparse
 
 COLLECTION = "multimodal_rag"
-DENSE_DIM = 1024     # jina-embeddings-v4 output dimension (text AND image share this space)
+DENSE_DIM = 1536     # text-embedding-3-small output dimension (must match embed.DIM)
 
 
 @lru_cache
@@ -85,7 +85,7 @@ def hybrid_search(queries, doc_ids=None, top_k=50):
     Each query contributes a dense + sparse prefetch leg; Qdrant RRF-fuses ALL
     legs server-side into one top_k list — same fusion as single-query, just a
     wider candidate net. Fusion operates per point id, so a chunk found by
-    several legs is boosted, not duplicated. The whole fan-out is ONE Jina
+    several legs is boosted, not duplicated. The whole fan-out is ONE embeddings
     call (batched) + ONE Qdrant request — no app-side parallelism needed.
     """
     if isinstance(queries, str):
