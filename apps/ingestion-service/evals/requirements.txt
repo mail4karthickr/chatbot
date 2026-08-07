@@ -1,6 +1,11 @@
-# Eval-suite dependencies — separate from the service's runtime requirements
-# (iOS analogy: the test target's own dependency list). Installed into
-# evals/.venv, never into the service venv.
-deepeval        # LLM eval framework, runs as a pytest plugin
-pytest          # test runner (deepeval builds on it; listed explicitly for direct use)
-httpx           # HTTP client to call the running service black-box (POST /retrieve, /generate)
+# Eval-suite dependencies — pinned exactly (design §3 D8, review P1-6).
+# Black-box suite: tests talk to the running test stack over HTTP and never
+# import service code, so NO service dependencies belong here. qdrant-client
+# is the one sanctioned direct-DB dependency: read-only invariant inspection
+# of the TEST Qdrant (design §6.4 T1).
+#
+# Install:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+deepeval==4.1.5       # LLM eval framework, runs as a pytest plugin
+pytest==9.1.1         # test runner
+httpx==0.28.1         # HTTP client for the test API (:8010)
+qdrant-client==1.18.0 # matches qdrant-eval server v1.18.3

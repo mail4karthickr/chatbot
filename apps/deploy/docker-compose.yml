@@ -1,0 +1,166 @@
+# DEV stack — every app containerized on one private network.
+# Replaces the former per-app compose files (apps/rabbitmq, apps/s3-sync-service
+# postgres, apps/ingestion-service) and the host-process launching in start-all.sh.
+#
+#   docker compose up --build          # or ./start-all.sh
+#   WORKERS=3 docker compose up        # scale ingestion workers
+#
+# Cloud backends (R2, Qdrant Cloud, OpenAI, Langfuse) come from each service's
+# .env file — only service-to-service URLs are overridden below, because inside
+# a container "localhost" means the container itself, not this machine.
+# The TEST stack (docker-compose.test.yml + start-test-stack.sh) is separate
+# and unchanged.
+
+name: chatbot
+
+services:
+  # --- infra ----------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sync
+      POSTGRES_PASSWORD: sync
+      POSTGRES_DB: sync
+    ports:
+      - "5433:5432"   # host 5432 often taken by a local Postgres
+    volumes:
+      - sync_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      # Non-guest user: RabbitMQ's built-in `guest` account is loopback-only,
+      # so cross-container connections need a real user. Dev creds.
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # management UI — http://localhost:15672 (app/app)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # --- backend services -----------------------------------------------------
+  s3-sync:
+    build: apps/s3-sync-service
+    env_file: apps/s3-sync-service/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://sync:sync@postgres:5432/sync
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8003/docs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  ingestion-api:
+    build: apps/ingestion-service
+    env_file: apps/ingestion-service/.env
+    environment:
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/
+      SYNC_URL: http://s3-sync:8003
+    ports:
+      - "8000:8000"
+    volumes:
+      - docling_cache:/root/.cache   # parse models download once, survive rebuilds
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      s3-sync:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/docs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 120s   # imports docling at startup — first boot is slow
+    restart: unless-stopped
+
+  ingestion-worker:
+    build: apps/ingestion-service    # same image as the API, different entrypoint
+    command: ["python", "worker.py"]
+    env_file: apps/ingestion-service/.env
+    environment:
+      RABBITMQ_URL: amqp://app:app@rabbitmq:5672/
+      SYNC_URL: http://s3-sync:8003
+    volumes:
+      - docling_cache:/root/.cache
+    depends_on:
+      # The API must be fully up first: ensure_bucket() is check-then-create,
+      # and racing API+worker against an empty bucket crashes one of them.
+      ingestion-api:
+        condition: service_healthy
+    deploy:
+      # Competing consumers: RabbitMQ round-robins ingestion.jobs across
+      # replicas (prefetch=1). Each replica loads its own Docling models —
+      # keep small on a laptop. Override: WORKERS=3 docker compose up
+      replicas: ${WORKERS:-2}
+    restart: unless-stopped
+
+  agent-service:
+    build: apps/agent-service
+    env_file: apps/agent-service/.env
+    environment:
+      RAG_BASE_URL: http://ingestion-api:8000
+    ports:
+      - "8001:8001"
+    depends_on:
+      ingestion-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8001/docs', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # --- UIs (static build + nginx proxy) ---------------------------------------
+  ingestion-ui:
+    build: apps/ingestion-ui
+    ports:
+      - "5174:80"   # same host port the vite dev server used
+    depends_on:
+      - ingestion-api
+    restart: unless-stopped
+
+  agent-ui:
+    build: apps/agent-ui
+    ports:
+      - "5173:80"
+    depends_on:
+      - agent-service
+    restart: unless-stopped
+
+networks:
+  # Same name the old per-app composes shared, so the semantics carry over.
+  default:
+    name: chatbot
+
+volumes:
+  # Pre-existing volumes from the old per-app compose projects — declared
+  # external so the dev ledger and broker state survive the consolidation.
+  sync_pgdata:
+    name: s3-sync-service_sync_pgdata
+    external: true
+  rabbitmq_data:
+    name: rabbitmq_rabbitmq_data
+    external: true
+  docling_cache:

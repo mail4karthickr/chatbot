@@ -5,3 +5,10 @@ __pycache__/
 .git/
 .claude/
 start-dev-server.sh
+start-worker.sh
+evals/
+data/
+.pytest_cache/
+.deepeval/
+docker-compose.yml
+Dockerfile

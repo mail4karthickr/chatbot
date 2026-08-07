@@ -1,0 +1,91 @@
+# Test-stack infrastructure for the ingestion-to-retrieval evaluation suite.
+# Design doc: plan/ingestion-eval-design.md (§5.1).
+#
+# One file = one lifecycle: these four stores always come up and down together.
+# Every image is digest-pinned (reproducibility, design §5.1 / review P1-6);
+# digests recorded 2026-08-01. Ports are chosen to never collide with the dev
+# stack (rabbitmq :5672, postgres :5433, cloud Qdrant/R2 have no local ports).
+#
+#   docker compose -f docker-compose.test.yml up -d      # start
+#   docker compose -f docker-compose.test.yml down       # stop, keep data
+#   docker compose -f docker-compose.test.yml down -v    # factory reset
+name: chatbot-test
+
+services:
+  minio:
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    container_name: minio-test
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API — the app's S3_ENDPOINT
+      - "9001:9001"   # web console (browse the eval bucket)
+    volumes:
+      - minio-test-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  postgres-test:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    container_name: postgres-test
+    environment:
+      # Same identifiers as the dev postgres for symmetry (design §5.1);
+      # isolation comes from being a different server on a different port.
+      POSTGRES_USER: sync
+      POSTGRES_PASSWORD: sync
+      POSTGRES_DB: sync
+    ports:
+      - "5434:5432"   # dev postgres holds 5433
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sync"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq-test:
+    image: rabbitmq:3.13-management@sha256:e582c0bc7766f3342496d8485efb5a1df782b5ce3886ad017e2eaae442311f69
+    container_name: rabbitmq-test
+    environment:
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    ports:
+      - "5673:5672"     # AMQP — dev broker holds 5672
+      - "15673:15672"   # management API/UI — seed.py's quiesce step uses this
+    volumes:
+      - rabbitmq-test-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant-eval:
+    image: qdrant/qdrant:v1.18.3@sha256:0bd98fa7977f1e75694779359ca4e212822e5a71334e28421182f72f209d5286
+    container_name: qdrant-eval
+    ports:
+      - "6333:6333"   # free locally — the dev Qdrant is cloud-hosted
+    volumes:
+      - qdrant-eval-data:/qdrant/storage
+    healthcheck:
+      # The qdrant image ships no curl/wget; bash /dev/tcp is enough for liveness.
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  minio-test-data:
+  postgres-test-data:
+  rabbitmq-test-data:
+  qdrant-eval-data:
+
+networks:
+  default:
+    name: chatbot-test

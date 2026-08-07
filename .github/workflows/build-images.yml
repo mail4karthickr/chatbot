@@ -1,0 +1,32 @@
+name: build-images
+
+on:
+  push:
+    branches: [main]     # every merge: image tagged :<commit-sha> + :latest
+    tags: ["v*"]         # release: image tagged :<version> + :latest
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write    # allow pushing to GHCR
+    strategy:
+      matrix:
+        service: [s3-sync-service, ingestion-service, agent-service, ingestion-ui, agent-ui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          tags: |
+            ghcr.io/mail4karthickr/chatbot/${{ matrix.service }}:${{ github.ref_name == 'main' && github.sha || github.ref_name }}
+            ghcr.io/mail4karthickr/chatbot/${{ matrix.service }}:latest

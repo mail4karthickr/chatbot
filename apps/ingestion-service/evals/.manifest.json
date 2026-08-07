@@ -1,0 +1,20 @@
+{
+  "fingerprint": "c71e130231f72fb9d1e5bab2f6b173696dda9159e94ef7ff2d26114acf49759f",
+  "components": {
+    "sources": "34703866b44d24432ca6f79bd11a897d2f1746cf1ba923ecee45d56695922fcb",
+    "config_assets": "25e315d7937d76ef5d2e3ab183026c29a6c47031124219c859a54bec773135af",
+    "requirements": "fe2ea47b3e9b96448226b8a6e461196b01543556886d6c932f70c160118242b0",
+    "installed_packages": "ba0497c7052534beb00d46a9819ba5f21953c2fb7e04034de71f1e26693d207c",
+    "effective_settings": "c2752efde37a0b20e7673b53db9adf1370ae0e0a70eeaf3ed98df5c997a9a0c7",
+    "runtime": "7b0b0547be56f1991c48acedfd44081287e2b0ae159363e17fb1d2e88c4844d5",
+    "fixtures": "9ff02242ea3cbfb9295d51fcc2a7d9ab91f742ede2284d4caab9921bd720663d"
+  },
+  "fixtures": {
+    "docs/eval-corpus/chart-image/yolo-object-detection-paper.pdf": "54bcd2dd05dc618849e8a94d8b88fe3eeb37f80e96e200600d38f1f733931678",
+    "docs/eval-corpus/table-heavy/fed-h41-balance-sheet.pdf": "c6a516f032d7f17479128bba9c7bd503c6e029c5f0bcacb026af10e4d2b374f3",
+    "docs/eval-corpus/text-heavy/bitcoin-whitepaper.pdf": "b1674191a88ec5cdd733e4240a81803105dc412d6c6708d53ab94fc248f4f553"
+  },
+  "queue": "ingestion.jobs",
+  "collection": "multimodal_rag",
+  "seeded_at": "2026-08-01T02:51:34.537010+00:00"
+}
