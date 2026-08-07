@@ -66,12 +66,13 @@ export function ChatCard() {
     const id = action.payload.id
     const t0 = performance.now()
     try {
-      const res = useGen ? await generateQuery(q, 8) : await retrieveQuery(q, 8)
+      const gen = useGen ? await generateQuery(q, 8) : undefined
+      const res = gen ?? (await retrieveQuery(q, 8))
       dispatch(
         querySucceeded({
           id,
-          answer: 'answer' in res ? res.answer : undefined,
-          sources: 'sources' in res ? res.sources : undefined,
+          answer: gen?.answer,
+          sources: gen?.sources,
           chunks: res.chunks,
           images: res.images,
           routing: res.routing,

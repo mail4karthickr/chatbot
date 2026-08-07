@@ -12,6 +12,7 @@ jobs:
       contents: read
       packages: write    # allow pushing to GHCR
     strategy:
+      fail-fast: false   # one failing service must not cancel the other builds
       matrix:
         service: [s3-sync-service, ingestion-service, agent-service, ingestion-ui, agent-ui]
     steps:
